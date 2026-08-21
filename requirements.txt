@@ -1,0 +1,7 @@
+mss
+opencv-python
+easyocr
+numpy
+pyautogui
+pyperclip
+PySide6

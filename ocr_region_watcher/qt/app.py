@@ -1,0 +1,682 @@
+"""Main application window -- Qt port of ../app.py. A tabbed window (Main
+/ Events) driving the same shared backend (formula.py, recognize.py,
+capture.py, inject.py, colorcheck.py) as the Tkinter version, through a
+richer, better-looking widget layer.
+"""
+from __future__ import annotations
+
+import threading
+import time
+
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .. import formula, inject
+from ..capture import ScreenGrabber
+from ..colorcheck import sample_reference_color, still_locked
+from ..recognize import EasyOCRRecognizer
+from .events import EventSequencer
+from .manual_input import ManualInput
+from .overlay import snip_point, snip_region
+from .style import MONO, MONO_SMALL
+from .target import TargetMarker
+from .watcher import RegionWatcher
+
+CYCLE_MS = 30  # same floor as the Tkinter version's cycle
+
+
+def _section_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setProperty("role", "section")
+    return label
+
+
+def _card(*, layout_cls=QVBoxLayout) -> tuple[QFrame, QVBoxLayout | QHBoxLayout]:
+    """A subtly-bordered rounded frame grouping one section -- pure UX/
+    visual grouping, no functional role. See style.py's QFrame[role=card]."""
+    frame = QFrame()
+    frame.setProperty("role", "card")
+    layout = layout_cls(frame)
+    layout.setContentsMargins(10, 8, 10, 8)
+    layout.setSpacing(4)
+    return frame, layout
+
+
+class _RecognizerLoader(QObject):
+    ready = Signal(object)
+
+    def load(self) -> None:
+        recognizer = EasyOCRRecognizer(gpu=False)
+        self.ready.emit(recognizer)
+
+
+class App(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("OCR Region Watcher")
+        self.resize(340, 560)
+
+        self.grabber = ScreenGrabber()
+        self.recognizer: EasyOCRRecognizer | None = None
+        self._recognizer_loading = False
+        self.watchers: list[RegionWatcher] = []
+        self.manual_inputs: list[ManualInput] = []
+        self.targets: list[TargetMarker] = []
+        self._next_id = 1
+        self._next_manual_id = 1
+        self._next_target_id = 1
+        self._last_result: dict = {}
+        self.sequencer = EventSequencer(fire=self._on_send_target, on_status=self._on_event_status)
+
+        self._build_ui()
+        self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula -- present from launch
+        self._load_recognizer_async()
+
+        self._cycle_timer = QTimer(self)
+        self._cycle_timer.timeout.connect(self._cycle)
+        self._cycle_timer.start(CYCLE_MS)
+
+    # -- layout -------------------------------------------------------
+    def _build_ui(self) -> None:
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        tabs = QTabWidget()
+        outer.addWidget(tabs)
+
+        main_scroll = QScrollArea()
+        main_scroll.setWidgetResizable(True)
+        main_content = QWidget()
+        main_scroll.setWidget(main_content)
+        self._build_main_tab(main_content)
+        tabs.addTab(main_scroll, "Main")
+
+        events_content = QWidget()
+        self._build_events_tab(events_content)
+        tabs.addTab(events_content, "Events")
+
+    def _build_main_tab(self, parent: QWidget) -> None:
+        layout = QVBoxLayout(parent)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        # No "+ Manual Input" button -- C and Budget are the only manual
+        # inputs this formula needs, and both are already added
+        # automatically (C at launch, Budget paired with the first
+        # region); there's nothing left for a user click to add.
+        buttons = QHBoxLayout()
+        add_region_btn = QPushButton("+ Add Region")
+        add_region_btn.setObjectName("accent")
+        add_region_btn.setToolTip("Drag a box over a value on screen to start reading it")
+        add_region_btn.clicked.connect(self._on_add_region)
+        buttons.addWidget(add_region_btn)
+        add_target_btn = QPushButton("+ Add Target")
+        add_target_btn.setToolTip("Click a screen position to click+paste a result value into later")
+        add_target_btn.clicked.connect(self._on_add_target)
+        buttons.addWidget(add_target_btn)
+        layout.addLayout(buttons)
+
+        self.status_label = QLabel("0 region(s). Drag a box to add one.")
+        self.status_label.setStyleSheet("color: #949ba4;")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        region_card, self.region_rows_layout = _card()
+        layout.addWidget(_section_label("REGIONS (READ FROM SCREEN)"))
+        layout.addWidget(region_card)
+
+        manual_card, self.manual_inputs_layout = _card()
+        layout.addWidget(_section_label("MANUAL INPUTS (TYPED, NOT READ FROM SCREEN)"))
+        layout.addWidget(manual_card)
+
+        layout.addWidget(_section_label("PARSED VALUES (DEBUG)"))
+        self.readings_label = QLabel("--")
+        self.readings_label.setProperty("role", "debug")
+        self.readings_label.setWordWrap(True)
+        layout.addWidget(self.readings_label)
+
+        target_card, self.target_rows_layout = _card()
+        self.target_rows_layout.setSpacing(8)  # each target is its own multi-row card -- 4px (the section default) read as touching
+        layout.addWidget(_section_label("TARGETS (SEND CLICKS + PASTES)"))
+        layout.addWidget(target_card)
+
+        self.target_status_label = QLabel("")
+        self.target_status_label.setProperty("role", "status")
+        self.target_status_label.setWordWrap(True)
+        layout.addWidget(self.target_status_label)
+
+        layout.addStretch(1)
+
+        result_row = QHBoxLayout()
+        result_title = QLabel("Result:")
+        result_title.setStyleSheet("font-weight: 700;")
+        result_row.addWidget(result_title)
+        self.result_label = QLabel("--")
+        self.result_label.setFont(MONO)
+        self.result_label.setWordWrap(True)
+        result_row.addWidget(self.result_label, 1)
+        layout.addLayout(result_row)
+
+    def _build_events_tab(self, parent: QWidget) -> None:
+        layout = QVBoxLayout(parent)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        hint = QLabel("Runs your targets in order, automatically -- add steps below:")
+        hint.setStyleSheet("color: #949ba4;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        add_event_btn = QPushButton("+ Add Event")
+        add_event_btn.setToolTip("Add a step: fire one of your targets, after waiting a bit")
+        add_event_btn.clicked.connect(self._on_add_event)
+        layout.addWidget(add_event_btn)
+
+        event_scroll = QScrollArea()
+        event_scroll.setWidgetResizable(True)
+        event_content = QWidget()
+        self.event_rows_layout = QVBoxLayout(event_content)
+        self.event_rows_layout.setSpacing(8)
+        self.event_rows_layout.addStretch(1)
+        event_scroll.setWidget(event_content)
+        layout.addWidget(event_scroll, 1)
+
+        self.loop_checkbox = QCheckBox("Loop (restart from step 1 after the last step)")
+        self.loop_checkbox.toggled.connect(self._on_loop_toggled)
+        layout.addWidget(self.loop_checkbox)
+
+        run_row = QHBoxLayout()
+        start_btn = QPushButton("Start")
+        start_btn.setObjectName("success")
+        start_btn.clicked.connect(self._on_start_events)
+        run_row.addWidget(start_btn)
+        stop_btn = QPushButton("Stop")
+        stop_btn.setObjectName("danger")
+        stop_btn.clicked.connect(self._on_stop_events)
+        run_row.addWidget(stop_btn)
+        layout.addLayout(run_row)
+
+        self.event_status_label = QLabel("")
+        self.event_status_label.setProperty("role", "status")
+        self.event_status_label.setWordWrap(True)
+        layout.addWidget(self.event_status_label)
+
+    # -- manual (typed, not screen-read) inputs --------------------------
+    def _next_manual_input_name(self) -> str:
+        defaults = ["C"]
+        name = defaults[self._next_manual_id - 1] if self._next_manual_id <= len(defaults) else f"input_{self._next_manual_id}"
+        self._next_manual_id += 1
+        return name
+
+    def _add_manual_input(self, name: str) -> None:
+        entry = ManualInput(name, on_remove=self._on_manual_input_removed)
+        self.manual_inputs.append(entry)
+        self.manual_inputs_layout.addWidget(entry)
+
+    def _on_manual_input_removed(self, entry: ManualInput) -> None:
+        if entry in self.manual_inputs:
+            self.manual_inputs.remove(entry)
+
+    # -- adding / removing regions --------------------------------------
+    def _next_region_name(self) -> str:
+        defaults = ["Red", "Blue"]
+        name = defaults[self._next_id - 1] if self._next_id <= len(defaults) else f"region_{self._next_id}"
+        self._next_id += 1
+        return name
+
+    _PAIRED_FORMULA_KEYS = {1: "PM", 2: "PW"}
+    _PAIRED_MANUAL_INPUTS = {1: "Budget"}
+
+    def _on_add_region(self) -> None:
+        # Deliberately not hiding this window first -- the overlay covers
+        # the whole virtual screen and stays on top regardless, and
+        # hiding it would momentarily give up this process's
+        # foreground-owner status right as the overlay needs it: Windows
+        # lets a process freely hand focus to its own other windows only
+        # while it still owns the foreground, and denies/ignores that
+        # request otherwise (same restriction chased down earlier in this
+        # project's Tkinter automation code).
+        rect = snip_region()
+        if rect is None:
+            return
+
+        region_index = self._next_id
+        left, top, width, height = rect
+        name = self._next_region_name()
+        watcher = RegionWatcher(
+            left, top, width, height, name,
+            on_close=self._on_watcher_closed, on_change=self._on_watcher_changed,
+            formula_key=self._PAIRED_FORMULA_KEYS.get(region_index),
+        )
+        watcher.show()
+        self._resample(watcher)
+        self.watchers.append(watcher)
+        self._add_region_row(watcher)
+        if self.recognizer is None:
+            watcher.set_lines(["loading OCR..."])
+        paired_name = self._PAIRED_MANUAL_INPUTS.get(region_index)
+        if paired_name is not None:
+            self._add_manual_input(paired_name)
+        self._update_status()
+
+    def _add_region_row(self, watcher: RegionWatcher) -> None:
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+
+        name_edit = QLineEdit(watcher.name)
+        name_edit.setFixedWidth(64)
+        name_edit.setFont(MONO)
+        name_edit.editingFinished.connect(lambda: watcher.set_name(name_edit.text()))
+        watcher.name_changed.connect(name_edit.setText)
+        row_layout.addWidget(name_edit)
+
+        # The live value here -- not shown a second time on the floating
+        # overlay's own header (which would just duplicate its strip).
+        value_label = QLineEdit(watcher.value_edit.text())
+        value_label.setReadOnly(True)
+        value_label.setFont(MONO)
+        value_label.setAlignment(Qt.AlignRight)
+        watcher.value_changed.connect(value_label.setText)
+        row_layout.addWidget(value_label, 1)
+
+        remove_btn = QPushButton("x")
+        remove_btn.setObjectName("flatRemove")
+        remove_btn.setFixedWidth(22)
+        remove_btn.clicked.connect(watcher._close)
+        row_layout.addWidget(remove_btn)
+
+        watcher.row_widget = row
+        self.region_rows_layout.addWidget(row)
+
+    def _on_watcher_closed(self, watcher: RegionWatcher) -> None:
+        if watcher in self.watchers:
+            self.watchers.remove(watcher)
+        row = getattr(watcher, "row_widget", None)
+        if row is not None:
+            row.deleteLater()
+        self._update_status()
+
+    def _on_watcher_changed(self, watcher: RegionWatcher) -> None:
+        self._resample(watcher)
+
+    def _resample(self, watcher: RegionWatcher) -> None:
+        image = self.grabber.grab(watcher.capture_rect())
+        watcher.ref_color = sample_reference_color(image)
+        watcher.last_hash = None
+
+    def _update_status(self) -> None:
+        self.status_label.setText(f"{len(self.watchers)} region(s). Drag a box to add one.")
+
+    # -- adding / removing targets (write-back: click + paste) ------------
+    def _next_target_name(self) -> str:
+        defaults = ["Target 1"]
+        name = defaults[self._next_target_id - 1] if self._next_target_id <= len(defaults) else f"Target {self._next_target_id}"
+        self._next_target_id += 1
+        return name
+
+    def _on_add_target(self) -> None:
+        point = snip_point()  # see _on_add_region for why this window isn't hidden first
+        if point is None:
+            return
+
+        target_index = self._next_target_id
+        x, y = point
+        name = self._next_target_name()
+        target = TargetMarker(x, y, name, on_close=self._on_target_closed, on_change=self._on_target_changed)
+        target.number = target_index
+        target.show()
+        self.targets.append(target)
+        self._add_target_row(target)
+
+    def _add_target_row(self, target: TargetMarker) -> None:
+        container = QFrame()
+        container.setProperty("role", "card")
+        col = QVBoxLayout(container)
+        col.setContentsMargins(8, 6, 8, 6)
+        col.setSpacing(6)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(6)
+        name_edit = QLineEdit(target.name)
+        name_edit.setFixedWidth(80)
+        name_edit.setFont(MONO_SMALL)
+        name_edit.setToolTip("Just a label -- doesn't affect what gets pasted")
+        name_edit.editingFinished.connect(lambda: target.set_name(name_edit.text()))
+        target.name_changed.connect(name_edit.setText)
+        top_row.addWidget(name_edit)
+
+        key_edit = QLineEdit(target.value_key or "")
+        key_edit.setFont(MONO_SMALL)
+        key_edit.setPlaceholderText("paste key, e.g. M")
+        key_edit.setToolTip("Which single formula.compute() result key Send pastes here")
+        key_edit.editingFinished.connect(lambda: target.set_value_key(key_edit.text()))
+        top_row.addWidget(key_edit, 1)
+        col.addLayout(top_row)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(8)
+        # Independent, user-controlled toggles -- not one checkbox forcing
+        # an all-or-nothing "click+paste" vs "click-only" choice. Click
+        # always fires first when both are on (see _on_send_target).
+        click_check = QCheckBox("click")
+        click_check.setChecked(True)
+        click_check.setToolTip("Click this target's screen position when Send fires")
+        click_check.toggled.connect(lambda checked: setattr(target, "click_enabled", checked))
+        bottom_row.addWidget(click_check)
+
+        paste_check = QCheckBox("paste")
+        paste_check.setChecked(True)
+        paste_check.setToolTip(
+            "Paste the current value when Send fires. With click also on, click happens first;"
+            " with click off, pastes into whatever's already focused."
+        )
+        paste_check.toggled.connect(lambda checked: setattr(target, "paste_enabled", checked))
+        bottom_row.addWidget(paste_check)
+
+        send_btn = QPushButton("Send")
+        send_btn.clicked.connect(lambda: self._on_send_target(target))
+        bottom_row.addWidget(send_btn)
+
+        bottom_row.addStretch(1)
+        remove_btn = QPushButton("x")
+        remove_btn.setObjectName("flatRemove")
+        remove_btn.setFixedWidth(22)
+        remove_btn.clicked.connect(target._close)
+        bottom_row.addWidget(remove_btn)
+        col.addLayout(bottom_row)
+
+        target.row_widget = container
+        self.target_rows_layout.addWidget(container)
+
+    def _on_target_closed(self, target: TargetMarker) -> None:
+        if target in self.targets:
+            self.targets.remove(target)
+        row = getattr(target, "row_widget", None)
+        if row is not None:
+            row.deleteLater()
+        self._rebuild_event_rows()
+
+    def _on_target_changed(self, target: TargetMarker) -> None:
+        pass  # just moved -- nothing to resample, no capture/OCR involved
+
+    def _click_target(self, target: TargetMarker, action) -> None:
+        """Run `action` (whatever inject.send() call this Send actually
+        needs) with this target's own marker window hidden first.
+
+        TargetMarker is a real, always-on-top window sitting exactly at
+        (target.x, target.y) -- unlike RegionWatcher it has no click-through
+        mask over its interior, so without this, a click there lands on
+        the marker's own window instead of passing through to whatever's
+        actually underneath it (reported directly: Send was clicking the
+        target icon itself, not what it's pointing at). Restored
+        afterward even if `action` raises. Same fix, same reasoning, as
+        the Tkinter version's _click_target.
+        """
+        target.hide()
+        QApplication.processEvents()
+        time.sleep(0.15)  # let the window manager actually finish hiding it
+        try:
+            action()
+        finally:
+            target.show()
+
+    def _on_send_target(self, target: TargetMarker) -> None:
+        if not target.click_enabled and not target.paste_enabled:
+            self.target_status_label.setText(f"'{target.name}': neither click nor paste is checked -- nothing to do")
+            return
+
+        # Only figure out a value to paste if paste is actually on --
+        # click-only doesn't need (or look up) any value_key at all.
+        text = None
+        if target.paste_enabled:
+            key = target.value_key
+            if not key:
+                self.target_status_label.setText(f"'{target.name}': no paste key set -- fill in its key field")
+                return
+            if key not in self._last_result:
+                self.target_status_label.setText(
+                    f"'{key}': not in the current result ({', '.join(self._last_result) or 'empty -- inputs incomplete?'})"
+                )
+                return
+            text = str(self._last_result[key])
+
+        try:
+            # click always first when both are on, see inject.send()
+            self._click_target(
+                target, lambda: inject.send(target.x, target.y, text, click=target.click_enabled, paste=target.paste_enabled)
+            )
+        except Exception as exc:  # e.g. pyautogui's failsafe -- report, don't crash the app
+            self.target_status_label.setText(f"'{target.name}': send failed -- {exc}")
+            return
+
+        parts = []
+        if target.click_enabled:
+            parts.append("clicked")
+        if target.paste_enabled:
+            parts.append(f"pasted {target.value_key}={text}")
+        self.target_status_label.setText(f"{target.name}: {' + '.join(parts)} at ({target.x}, {target.y})")
+
+    # -- events tab: automated sequence of target Sends -------------------
+    def _on_add_event(self) -> None:
+        if not self.targets:
+            self.event_status_label.setText("add a target first (Main tab) before adding an event step")
+            return
+        self.sequencer.events.append({"target": self.targets[0], "delay": 0})  # ms -- smallest QTimer accepts
+        self._rebuild_event_rows()
+
+    def _remove_event(self, index: int) -> None:
+        del self.sequencer.events[index]
+        self._rebuild_event_rows()
+
+    def _move_event(self, index: int, delta: int) -> None:
+        events = self.sequencer.events
+        new_index = index + delta
+        if 0 <= new_index < len(events):
+            events[index], events[new_index] = events[new_index], events[index]
+            self._rebuild_event_rows()
+
+    def _rebuild_event_rows(self) -> None:
+        while self.event_rows_layout.count() > 1:  # leave the trailing stretch alone
+            item = self.event_rows_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        for index, event in enumerate(self.sequencer.events):
+            row = QFrame()
+            row.setProperty("role", "card")
+            col = QVBoxLayout(row)
+            col.setContentsMargins(8, 6, 8, 6)
+            col.setSpacing(5)
+
+            top_row = QHBoxLayout()
+            top_row.setSpacing(6)
+            step_label = QLabel(f"Step {index + 1}")
+            step_label.setStyleSheet("color: #949ba4; font-weight: 600;")
+            top_row.addWidget(step_label)
+
+            picker = QComboBox()
+            picker.setFont(MONO_SMALL)
+            labels = {f"#{t.number} ({t.name})": t for t in self.targets}
+            for label in labels:
+                picker.addItem(label)
+            current_label = next((lbl for lbl, t in labels.items() if t is event["target"]), "")
+            if current_label:
+                picker.setCurrentText(current_label)
+            picker.currentTextChanged.connect(lambda text, i=index, lbls=labels: self._on_event_target_picked(i, lbls, text))
+            top_row.addWidget(picker, 1)
+            col.addLayout(top_row)
+
+            bottom_row = QHBoxLayout()
+            bottom_row.setSpacing(6)
+            bottom_row.addWidget(QLabel("wait"))
+            delay_edit = QLineEdit(str(event["delay"]))
+            delay_edit.setFixedWidth(60)
+            delay_edit.setFont(MONO_SMALL)
+            delay_edit.editingFinished.connect(lambda i=index, e=delay_edit: self._on_event_delay_committed(i, e))
+            bottom_row.addWidget(delay_edit)
+            bottom_row.addWidget(QLabel("ms"))
+            bottom_row.addStretch(1)
+
+            up_btn = QPushButton("^")
+            up_btn.setFixedWidth(26)
+            up_btn.setToolTip("Move this step earlier")
+            up_btn.clicked.connect(lambda checked=False, i=index: self._move_event(i, -1))
+            bottom_row.addWidget(up_btn)
+            down_btn = QPushButton("v")
+            down_btn.setFixedWidth(26)
+            down_btn.setToolTip("Move this step later")
+            down_btn.clicked.connect(lambda checked=False, i=index: self._move_event(i, 1))
+            bottom_row.addWidget(down_btn)
+            remove_btn = QPushButton("x")
+            remove_btn.setObjectName("flatRemove")
+            remove_btn.setFixedWidth(26)
+            remove_btn.setToolTip("Remove this step")
+            remove_btn.clicked.connect(lambda checked=False, i=index: self._remove_event(i))
+            bottom_row.addWidget(remove_btn)
+            col.addLayout(bottom_row)
+
+            self.event_rows_layout.insertWidget(index, row)
+
+    def _on_event_target_picked(self, index: int, labels: dict, text: str) -> None:
+        target = labels.get(text)
+        if target is not None and index < len(self.sequencer.events):
+            self.sequencer.events[index]["target"] = target
+
+    def _on_event_delay_committed(self, index: int, edit: QLineEdit) -> None:
+        try:
+            self.sequencer.events[index]["delay"] = max(0, int(float(edit.text())))  # ms -- whole numbers
+        except ValueError:
+            edit.setText(str(self.sequencer.events[index]["delay"]))
+
+    def _on_loop_toggled(self, checked: bool) -> None:
+        self.sequencer.loop = checked
+
+    def _on_start_events(self) -> None:
+        # The 30ms background cycle (region reads -> _gather_readings() ->
+        # _last_result) keeps running by default -- and each step's
+        # _click_target blocks for ~150-200ms (hide settle delay + the
+        # click-to-paste delay), giving that cycle repeated chances to
+        # fire *during* a run. Confirmed directly: a value present when
+        # step 1 fires can be gone by the time step 2 fires, because a
+        # cycle tick recomputed _last_result in between -- step 1 sends
+        # correctly, every step after it silently no-ops (key not in the
+        # now-different result), which is exactly "only one step runs".
+        # Pausing for the run's duration keeps every step working from
+        # the same stable snapshot; _on_event_status resumes it once the
+        # run stops or finishes on its own.
+        self._cycle_timer.stop()
+        self.sequencer.start()
+
+    def _on_stop_events(self) -> None:
+        self.sequencer.stop()
+
+    def _on_event_status(self, text: str) -> None:
+        self.event_status_label.setText(text)
+        if not self.sequencer.running and not self._cycle_timer.isActive():
+            self._cycle_timer.start(CYCLE_MS)
+
+    # -- OCR loading + the read cycle --------------------------------------
+    def _load_recognizer_async(self) -> None:
+        if self.recognizer is not None or self._recognizer_loading:
+            return
+        self._recognizer_loading = True
+        self.status_label.setText("Loading OCR model in the background...")
+
+        self._loader = _RecognizerLoader()
+        self._loader.ready.connect(self._on_recognizer_ready)
+        self._loader_thread = threading.Thread(target=self._loader.load, daemon=True)
+        self._loader_thread.start()
+
+    def _on_recognizer_ready(self, recognizer: EasyOCRRecognizer) -> None:
+        self.recognizer = recognizer
+        self._recognizer_loading = False
+        self._update_status()
+
+    def _cycle(self) -> None:
+        for watcher in list(self.watchers):
+            rect = watcher.capture_rect()
+            image = self.grabber.grab(rect)
+
+            if watcher.ref_color is not None:
+                locked = still_locked(image, watcher.ref_color)
+                watcher.set_locked(locked)
+                if not locked:
+                    continue
+
+            if self.recognizer is None:
+                continue
+
+            crop_hash = hash(image.tobytes())
+            if watcher.last_hash == crop_hash:
+                continue
+            watcher.last_hash = crop_hash
+
+            reading = self.recognizer.read(image, watcher)
+            watcher.set_lines([line or "?" for line in reading.lines] or ["?"])
+            if reading.ok:
+                watcher.last_value = reading.value
+                watcher.last_values = reading.values
+
+        self._update_result()
+
+    def _watcher_keys(self, watcher: RegionWatcher) -> list:
+        if watcher.formula_key is not None:
+            return [watcher.formula_key]
+        return [n.strip() for n in watcher.name.split(",") if n.strip()]
+
+    def _gather_readings(self) -> dict:
+        readings = {}
+        for watcher in self.watchers:
+            keys = self._watcher_keys(watcher)
+            if len(keys) > 1:
+                for key, value in zip(keys, watcher.last_values):
+                    readings[key] = value
+            elif keys and watcher.last_value is not None:
+                readings[keys[0]] = watcher.last_value
+        for entry in self.manual_inputs:
+            value = entry.value()
+            if value is not None:
+                readings[entry.name] = value
+            elif entry.value_edit.text().strip():
+                readings[entry.name] = entry.value_edit.text().strip()
+        return readings
+
+    def _update_result(self) -> None:
+        readings = self._gather_readings()
+        required = getattr(formula, "REQUIRED", ())
+        missing = [key for key in required if key not in readings]
+        debug_text = ", ".join(f"{k}={v}" for k, v in readings.items()) if readings else "--"
+        if missing:
+            debug_text += (" | " if readings else "") + f"missing: {', '.join(missing)}"
+        self.readings_label.setText(debug_text)
+        try:
+            result = formula.compute(readings)
+        except Exception as exc:
+            self.result_label.setText(f"error: {exc}")
+            self._last_result = {}
+            return
+        self.result_label.setText(", ".join(f"{k}={v}" for k, v in result.items()) if result else "--")
+        self._last_result = result
+
+    def closeEvent(self, event) -> None:
+        self.sequencer.stop()
+        self._cycle_timer.stop()
+        for watcher in list(self.watchers):
+            watcher.close()
+        for target in list(self.targets):
+            target.close()
+        self.grabber.close()
+        super().closeEvent(event)
