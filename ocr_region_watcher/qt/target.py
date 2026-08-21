@@ -1,12 +1,11 @@
 """A small floating marker at a fixed screen point -- the write-back
-counterpart to RegionWatcher's read side. Qt port of ../target.py, with
-one deliberate change: `name` (a free-form label, purely for your own
-reference) and `value_key` (exactly one formula.compute() result key it
-pastes) are separate fields, not one field doing double duty. That
-conflation is exactly what caused confusion earlier ("target_1" not
-matching any result key just because nobody had renamed the label yet)
--- same class of bug regions had before `formula_key` split display-name
-from lookup-key there too.
+counterpart to RegionWatcher's read side. `name` (a free-form label, purely
+for your own reference) and `value_key` (exactly one formula.compute()
+result key it pastes) are kept as separate fields, not one field doing
+double duty. That conflation is exactly what caused confusion earlier
+("target_1" not matching any result key just because nobody had renamed
+the label yet) -- same class of bug regions had before `formula_key` split
+display-name from lookup-key there too.
 
 No capture rect, no OCR, no resize handles (a point, not an area to
 read). Never fires on its own; only an explicit Send action in app.py

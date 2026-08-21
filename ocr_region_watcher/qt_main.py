@@ -1,8 +1,7 @@
-"""Entry point for the PySide6 version of OCR Region Watcher: `python -m ocr_region_watcher.qt_main`.
+"""Entry point: `python -m ocr_region_watcher.qt_main`.
 
-Runs alongside the original Tkinter app (`python -m ocr_region_watcher.main`) without
-conflicting -- nothing about that version is touched or removed. Once
-you're happy with this one, the Tkinter files can be retired.
+The original Tkinter app has been retired -- this PySide6 UI is the only
+one left.
 """
 from __future__ import annotations
 

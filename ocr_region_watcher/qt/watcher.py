@@ -1,12 +1,12 @@
 """Persistent, movable, resizable floating frame sitting over a screen
-region -- Qt port of ../watcher.py.
+region.
 
-Real click-through this time: `setMask()` on the actual top-level window
-carves the interior out of its hit-test region entirely, so the OS treats
-that area as if this window plain isn't there -- clicks and the visible
-content underneath both pass straight through. That's a stronger
-guarantee than Tkinter's single-color-key transparency, which is what let
-the target-marker's own crosshair intercept its own click earlier in this
+Real click-through: `setMask()` on the actual top-level window carves the
+interior out of its hit-test region entirely, so the OS treats that area
+as if this window plain isn't there -- clicks and the visible content
+underneath both pass straight through. That's a stronger guarantee than a
+single-color-key transparency trick would give, which is what let the
+target-marker's own crosshair intercept its own click earlier in this
 project (a solid pixel drawn in the "wrong" place broke it; a masked-out
 region has no pixels to accidentally get wrong).
 """

@@ -1,7 +1,6 @@
-"""Main application window -- Qt port of ../app.py. A tabbed window (Main
-/ Events) driving the same shared backend (formula.py, recognize.py,
-capture.py, inject.py, colorcheck.py) as the Tkinter version, through a
-richer, better-looking widget layer.
+"""Main application window -- a tabbed window (Main / Events) driving the
+shared backend (formula.py, recognize.py, capture.py, inject.py,
+colorcheck.py) through a Qt widget layer.
 """
 from __future__ import annotations
 

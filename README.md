@@ -81,7 +81,7 @@ pip install -r requirements.txt
 ## Usage
 
 ```
-python -m ocr_region_watcher.main
+python -m ocr_region_watcher.qt_main
 ```
 Opens the app and starts loading the OCR model in the background right
 away (not waiting for your first drag). Click **+ Add Region**, drag a box,

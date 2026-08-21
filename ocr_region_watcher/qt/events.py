@@ -1,9 +1,6 @@
 """Runs a saved sequence of events -- each one "fire this target, after
 waiting this many milliseconds" -- in order, automatically, optionally
-looping back to the start when it finishes. Same model as ../events.py's
-Tk version (reuses whatever `fire` does -- paste/click-only/M,W-cycling --
-completely unchanged), just scheduled through Qt's QTimer instead of Tk's
-`root.after`.
+looping back to the start when it finishes. Scheduled through Qt's QTimer.
 
 A real QTimer instance (not the static QTimer.singleShot) so Stop can
 actually cancel a pending step -- `.stop()` on an in-flight singleShot

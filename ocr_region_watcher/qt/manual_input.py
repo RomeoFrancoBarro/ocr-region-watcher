@@ -1,7 +1,7 @@
 """A directly user-typed named input -- for values that don't come from the
-screen at all (e.g. a percentage you supply yourself). Qt port of
-../manual_input.py: same renameable-name pattern, same `.value()` contract
-formula.py's readings dict relies on -- only the widget toolkit changed.
+screen at all (e.g. a percentage you supply yourself). Same renameable-name
+pattern regions use, and the same `.value()` contract formula.py's readings
+dict relies on.
 """
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Region/point selection overlays -- Qt port of ../calibrate.py.
+"""Region/point selection overlays.
 
 Both span every monitor (the union of all QScreen geometries, not just the
 primary one -- mirrors mss's monitors[0] the original relied on) as a
