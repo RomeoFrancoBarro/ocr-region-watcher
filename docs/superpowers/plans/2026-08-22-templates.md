@@ -742,9 +742,9 @@ Add right after the code from Step 4:
 
 Run: `python -m ocr_region_watcher.qt_main`
 1. Confirm a third **Templates** tab exists.
-2. On the Main tab: drag one region over some on-screen text, click **+ Add Target** somewhere, type `5` into the "C" manual input.
-3. Go to **Templates**, click **+ Add Template**. Confirm: a "Template 1" row appears, highlighted, with an enabled **Save** and a disabled **Active** button (not "Switch").
-4. Click **Save**. Confirm no crash, and `data/templates.json` now exists and contains that region/target/"C"=5.
+2. Go to **Templates**, click **+ Add Template**. Confirm: a "Template 1" row appears, highlighted, with an enabled **Save** and a disabled **Active** button (not "Switch"). (`+ Add Template` starts from a blank slate by design — it tears down whatever was live *before* you build anything new, so build the template's content after clicking it, not before. See the spec's Add Template behavior.)
+3. On the Main tab: drag one region over some on-screen text, click **+ Add Target** somewhere, type `5` into the "C" manual input.
+4. Go back to **Templates**, click **Save** on the "Template 1" row. Confirm no crash, and `data/templates.json` now exists and contains that region/target/"C"=5.
 5. Click **+ Add Template** again. Confirm every live region/target overlay disappears from the screen, and "Template 2" appears active.
 6. Click **Switch** on the "Template 1" row. Confirm the region reappears at the same screen position, the target crosshair reappears at the same point, and "C" shows `5` again.
 
