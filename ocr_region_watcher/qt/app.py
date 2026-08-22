@@ -593,7 +593,10 @@ class App(QWidget):
         if not new_name or new_name == old_name:
             name_edit.setText(old_name)
             return
-        if new_name in self.template_store.names():
+        displayed_names = set(self.template_store.names())
+        if self.active_template is not None:
+            displayed_names.add(self.active_template)
+        if new_name in displayed_names:
             name_edit.setText(old_name)  # reject duplicate, revert
             return
         try:
