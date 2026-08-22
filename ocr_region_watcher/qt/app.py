@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QTabWidget,
@@ -571,6 +572,13 @@ class App(QWidget):
         self._refresh_templates_tab()
 
     def _on_template_delete(self, name: str) -> None:
+        reply = QMessageBox.question(
+            self, "Delete template",
+            f"Delete '{name}'? Can't be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
         try:
             self.template_store.delete(name)
         except OSError as exc:
@@ -584,6 +592,9 @@ class App(QWidget):
         new_name = name_edit.text().strip()
         if not new_name or new_name == old_name:
             name_edit.setText(old_name)
+            return
+        if new_name in self.template_store.names():
+            name_edit.setText(old_name)  # reject duplicate, revert
             return
         try:
             self.template_store.rename(old_name, new_name)
