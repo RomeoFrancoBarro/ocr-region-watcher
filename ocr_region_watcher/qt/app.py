@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -82,11 +83,15 @@ class App(QWidget):
         self._last_result: dict = {}
         self.template_store = TemplateStore()
         self.active_template: str | None = None
-        # What "nothing has changed yet" looks like for an active template
-        # that has never been saved -- captured right after + Add Template
-        # seeds it, since that seeding (the "C" manual input) is itself
-        # already a difference from a truly empty snapshot. See
-        # _confirm_discard_if_dirty.
+        # True only when the active template was reached via Edit (or
+        # promoted in place from a Switch) -- Switch alone loads it live for
+        # viewing/using but leaves this False, so a stray drag can't
+        # accidentally overwrite a saved template through its Save button.
+        self.editable = False
+        # What "nothing has changed yet" looks like when nothing is loaded
+        # from a saved template -- captured by _seed_blank_slate(), since
+        # the "C" manual input it seeds is itself already a difference from
+        # a truly empty snapshot. See _confirm_discard_if_dirty.
         self._pending_baseline: dict | None = None
         self.sequencer = EventSequencer(fire=self._on_send_target, on_status=self._on_event_status)
 
@@ -96,16 +101,16 @@ class App(QWidget):
         last_active = self.template_store.get_last_active()
         if last_active is not None and self.template_store.get(last_active) is not None:
             try:
-                self._load_template(last_active)
+                self._load_template(last_active, editable=False)
             except (KeyError, TypeError, ValueError):
                 # A restore that died partway through (e.g. the second
                 # region's saved dict is missing a key) leaves everything it
                 # already recreated on screen -- clear that out before
                 # falling back, so the blank-slate fallback really is blank.
                 self._teardown_live_state()
-                self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula -- present from launch
+                self._seed_blank_slate()
         else:
-            self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula -- present from launch
+            self._seed_blank_slate()
         self._refresh_templates_tab()
         self._load_recognizer_async()
 
@@ -185,6 +190,19 @@ class App(QWidget):
         self.target_status_label.setWordWrap(True)
         layout.addWidget(self.target_status_label)
 
+        layout.addWidget(_section_label("SAVE THIS SETUP"))
+        save_as_template_btn = QPushButton("Save as Template")
+        save_as_template_btn.setToolTip(
+            "Save everything above (regions, manual inputs, targets) as a new template -- "
+            "manage existing templates from the Templates tab"
+        )
+        save_as_template_btn.clicked.connect(self._on_save_as_template)
+        layout.addWidget(save_as_template_btn)
+        self.save_template_status_label = QLabel("")
+        self.save_template_status_label.setProperty("role", "status")
+        self.save_template_status_label.setWordWrap(True)
+        layout.addWidget(self.save_template_status_label)
+
         layout.addStretch(1)
 
         result_row = QHBoxLayout()
@@ -247,15 +265,16 @@ class App(QWidget):
         layout.setSpacing(8)
 
         hint = QLabel(
-            "Save the whole live setup (regions, manual inputs, targets) under "
-            "a name, and switch between saved setups with one click."
+            "Switch to view/use a saved setup, or Edit to load it and let Save persist your "
+            "changes back into it. Save a new one from the Main tab's 'Save as Template' button."
         )
         hint.setStyleSheet("color: #949ba4;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        add_template_btn = QPushButton("+ Add Template")
+        add_template_btn = QPushButton("+ Clear (start a new setup)")
         add_template_btn.setObjectName("accent")
+        add_template_btn.setToolTip("Clears everything below to a blank slate -- doesn't create a template by itself, Save as Template does that")
         add_template_btn.clicked.connect(self._on_add_template)
         layout.addWidget(add_template_btn)
 
@@ -576,61 +595,107 @@ class App(QWidget):
     def _confirm_discard_if_dirty(self) -> bool:
         """True if it's safe to tear down the current live state -- either
         nothing would be lost, or the user explicitly confirmed discarding
-        it. Shared by Switch and Add Template, the two actions that tear
-        down live state."""
-        if self.active_template is None:
-            return True
+        it. Shared by every action that tears down or replaces live state
+        (clearing to a new setup, Switch, Edit)."""
         current = self._capture_snapshot()
-        saved = self.template_store.get(self.active_template)
-        # A template that's only ever existed in memory has no saved
-        # snapshot to compare against -- its baseline is whatever + Add
-        # Template seeded (see _pending_baseline), not an empty snapshot.
-        baseline = saved if saved is not None else (self._pending_baseline or empty_snapshot())
+        if self.active_template is not None:
+            # active_template, whenever set, always already names an entry
+            # in the store (Save as Template only ever points it at a name
+            # it just saved) -- the empty_snapshot() fallback here is only
+            # for the unlikely case it got deleted out from under us.
+            baseline = self.template_store.get(self.active_template) or empty_snapshot()
+            text = f"'{self.active_template}' has unsaved changes -- discard and switch anyway?"
+        else:
+            # Nothing loaded from a saved template -- compare against
+            # whatever a blank slate looked like right after the last
+            # reset (see _pending_baseline), so work built since then still
+            # warns before being discarded, even though it isn't "in" any
+            # named template yet.
+            baseline = self._pending_baseline or empty_snapshot()
+            text = "You have unsaved changes -- discard them?"
         if current == baseline:
             return True
-        reply = QMessageBox.question(
-            self, "Unsaved changes",
-            f"'{self.active_template}' has unsaved changes -- discard and switch anyway?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-        )
+        reply = QMessageBox.question(self, "Unsaved changes", text, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         return reply == QMessageBox.Yes
+
+    def _seed_blank_slate(self) -> None:
+        """What a fresh launch (or the Templates tab's clear button) looks
+        like: counters reset, nothing active, just the one manual input
+        every run of this formula needs. Captures _pending_baseline right
+        after, so the dirty check has something to compare a not-yet-saved
+        setup against."""
+        self._next_id = self._next_manual_id = self._next_target_id = 1
+        self.active_template = None
+        self.editable = False
+        self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula
+        self._pending_baseline = self._capture_snapshot()
 
     def _on_add_template(self) -> None:
         if not self._confirm_discard_if_dirty():
             return
         self._teardown_live_state()
-        # Back to a fresh-launch state, counters included -- otherwise the
-        # first two regions dragged after this wouldn't get the PM/PW/Budget
-        # auto-pairing a genuinely fresh session's first two regions get.
-        self._next_id = self._next_manual_id = self._next_target_id = 1
-        self.active_template = self.template_store.next_default_name()
-        self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula -- re-seeded here exactly like a fresh launch
-        self._pending_baseline = self._capture_snapshot()
+        self._seed_blank_slate()
         self._refresh_templates_tab()
 
-    def _on_template_clicked(self, name: str) -> None:
-        # Re-clicking the already-active template just reloads it: the live
-        # state *is* that template's, so a switch away is the only thing
-        # that can lose unsaved work.
-        if self.active_template != name and not self._confirm_discard_if_dirty():
+    def _activate_template(self, name: str, *, editable: bool) -> None:
+        """Common path for both Switch and Edit -- the only difference
+        between them is this `editable` flag. Re-activating the template
+        that's already loaded just flips the flag in place (nothing to
+        tear down or lose); activating a different one goes through the
+        full discard-if-dirty + reload path."""
+        if self.active_template == name:
+            self.editable = editable
+            self._refresh_templates_tab()
             return
-        self._load_template(name)
+        if not self._confirm_discard_if_dirty():
+            return
+        self._load_template(name, editable=editable)
 
-    def _load_template(self, name: str) -> None:
+    def _on_template_switch_clicked(self, name: str) -> None:
+        self._activate_template(name, editable=False)
+
+    def _on_template_edit_clicked(self, name: str) -> None:
+        self._activate_template(name, editable=True)
+
+    def _load_template(self, name: str, *, editable: bool) -> None:
         data = self.template_store.get(name)
         if data is None:
             return
         self._teardown_live_state()
         self._restore_snapshot(data)
         self.active_template = name
+        self.editable = editable
         try:
             self.template_store.set_last_active(name)
         except OSError as exc:
             self.template_status_label.setText(f"loaded '{name}', but couldn't remember it for next launch: {exc}")
         self._refresh_templates_tab()
 
+    def _on_save_as_template(self) -> None:
+        default = self.template_store.next_default_name()
+        name, ok = QInputDialog.getText(self, "Save as Template", "Name:", text=default)
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            self.save_template_status_label.setText("name can't be blank")
+            return
+        if name in self.template_store.names():
+            self.save_template_status_label.setText(f"'{name}' already exists -- pick a different name")
+            return
+        try:
+            self.template_store.save(name, self._capture_snapshot())
+            self.template_store.set_last_active(name)
+        except OSError as exc:
+            self.save_template_status_label.setText(f"couldn't save: {exc}")
+            return
+        self.active_template = name
+        self.editable = True
+        self.save_template_status_label.setText(f"saved as '{name}'")
+        self._refresh_templates_tab()
+
     def _on_template_save(self, name: str) -> None:
-        if name != self.active_template:
+        if name != self.active_template or not self.editable:
             return
         try:
             self.template_store.save(name, self._capture_snapshot())
@@ -656,6 +721,7 @@ class App(QWidget):
             return
         if name == self.active_template:
             self.active_template = None
+            self.editable = False
         self._refresh_templates_tab()
 
     def _on_template_renamed(self, old_name: str, name_edit: QLineEdit) -> None:
@@ -663,10 +729,12 @@ class App(QWidget):
         if not new_name or new_name == old_name:
             name_edit.setText(old_name)
             return
-        displayed_names = set(self.template_store.names())
-        if self.active_template is not None:
-            displayed_names.add(self.active_template)
-        if new_name in displayed_names:
+        # active_template, whenever set, always names an entry already in
+        # the store (Save as Template only ever points it at a name it just
+        # saved) -- no separate "pending, not-yet-saved" name can collide
+        # here the way one could when + Add Template used to allocate a
+        # name before Save.
+        if new_name in self.template_store.names():
             name_edit.setText(old_name)  # reject duplicate, revert
             return
         try:
@@ -685,22 +753,22 @@ class App(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-        names = list(self.template_store.names())
-        if self.active_template is not None and self.active_template not in names:
-            names.append(self.active_template)  # a just-added, not-yet-saved template
-
-        for index, name in enumerate(names):
+        # active_template, whenever set, always names an entry already in
+        # the store -- see _on_template_renamed's comment -- so there's no
+        # "pending, not-yet-saved" row to special-case here any more.
+        for index, name in enumerate(self.template_store.names()):
             self.template_rows_layout.insertWidget(index, self._build_template_row(name))
 
     def _build_template_row(self, name: str) -> QFrame:
         is_active = name == self.active_template
+        is_editable_now = is_active and self.editable
         row = QFrame()
         row.setProperty("role", "card")
         if is_active:
             # Selector-scoped (like every rule in style.py) so the accent
             # border lands on the frame alone -- an unscoped stylesheet
             # propagates to every child, outlining the row's name field and
-            # all three buttons too.
+            # all four buttons too.
             row.setStyleSheet('QFrame[role="card"] { border: 1px solid #5865f2; }')
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(8, 6, 8, 6)
@@ -711,13 +779,27 @@ class App(QWidget):
         row_layout.addWidget(name_edit, 1)
         name_edit.editingFinished.connect(lambda n=name, e=name_edit: self._on_template_renamed(n, e))
 
-        switch_btn = QPushButton("Active" if is_active else "Switch")
-        switch_btn.setEnabled(not is_active)
-        switch_btn.clicked.connect(lambda checked=False, n=name: self._on_template_clicked(n))
+        # Switch (view/use, Save stays off) and Edit (Save turns on) are
+        # deliberately separate actions, not two labels for the same one --
+        # loading a template to actively monitor a site shouldn't leave it
+        # one stray drag away from being overwritten. Re-clicking Edit on a
+        # row that's already active-but-view-only just promotes it in
+        # place (see _activate_template); Switch on an already-editable
+        # active row demotes it back, same way, no reload either time.
+        switch_btn = QPushButton("Active" if (is_active and not self.editable) else "Switch")
+        switch_btn.setEnabled(not (is_active and not self.editable))
+        switch_btn.setToolTip("Load live for viewing/using -- Save stays off unless you Edit it")
+        switch_btn.clicked.connect(lambda checked=False, n=name: self._on_template_switch_clicked(n))
         row_layout.addWidget(switch_btn)
 
+        edit_btn = QPushButton("Editing" if is_editable_now else "Edit")
+        edit_btn.setEnabled(not is_editable_now)
+        edit_btn.setToolTip("Load live and let Save persist your changes back into it")
+        edit_btn.clicked.connect(lambda checked=False, n=name: self._on_template_edit_clicked(n))
+        row_layout.addWidget(edit_btn)
+
         save_btn = QPushButton("Save")
-        save_btn.setEnabled(is_active)
+        save_btn.setEnabled(is_editable_now)
         save_btn.clicked.connect(lambda checked=False, n=name: self._on_template_save(n))
         row_layout.addWidget(save_btn)
 
