@@ -12,6 +12,9 @@ env/
 # Claude Code local/personal settings (machine-specific permissions)
 .claude/settings.local.json
 
+# Saved templates (per-user data, not source)
+data/
+
 # OS
 Thumbs.db
 .DS_Store
