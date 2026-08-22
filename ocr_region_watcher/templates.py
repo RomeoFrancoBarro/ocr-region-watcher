@@ -41,8 +41,22 @@ class TemplateStore:
             return
         try:
             data = json.loads(raw)
-            self._templates = dict(data.get("templates", {}))
-            self._last_active = data.get("last_active")
+            raw_templates = data.get("templates", {})
+            if not isinstance(raw_templates, dict):
+                raise ValueError("templates value is not a dict")
+            # Filter down to exactly {str: dict} here rather than trusting
+            # whatever the file held: a bad *member* of an otherwise-valid
+            # container (e.g. {"templates": {"A": 5}}) parses fine and only
+            # blows up much later, inside the UI's restore path, where this
+            # method's own except clause can no longer see it. Same for
+            # last_active -- a non-str there is unusable (and, if a list,
+            # unhashable) as a lookup key downstream.
+            self._templates = {
+                name: snapshot for name, snapshot in raw_templates.items()
+                if isinstance(name, str) and isinstance(snapshot, dict)
+            }
+            last_active = data.get("last_active")
+            self._last_active = last_active if isinstance(last_active, str) else None
         except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
             self._templates, self._last_active = {}, None
 

@@ -29,6 +29,16 @@ class TemplateStoreTests(unittest.TestCase):
         store = TemplateStore(self.path)
         self.assertEqual(store.names(), [])
 
+    def test_non_dict_template_entry_is_filtered_out(self):
+        # A valid templates *container* holding an invalid *member* -- this
+        # parses fine, so nothing raises here; without filtering it would
+        # only surface later, as get("A") handing a bare int to the UI's
+        # snapshot restore.
+        self.path.write_text('{"templates": {"A": 5}, "last_active": "A"}', encoding="utf-8")
+        store = TemplateStore(self.path)
+        self.assertEqual(store.names(), [])
+        self.assertIsNone(store.get("A"))
+
     def test_save_then_get_round_trips(self):
         store = TemplateStore(self.path)
         snapshot = {
