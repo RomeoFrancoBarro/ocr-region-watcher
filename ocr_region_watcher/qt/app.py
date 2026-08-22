@@ -85,8 +85,12 @@ class App(QWidget):
         self.sequencer = EventSequencer(fire=self._on_send_target, on_status=self._on_event_status)
 
         self._build_ui()
+        last_active = self.template_store.get_last_active()
+        if last_active is not None and self.template_store.get(last_active) is not None:
+            self._load_template(last_active)
+        else:
+            self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula -- present from launch
         self._refresh_templates_tab()
-        self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula -- present from launch
         self._load_recognizer_async()
 
         self._cycle_timer = QTimer(self)
