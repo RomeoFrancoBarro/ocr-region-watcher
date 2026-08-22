@@ -95,9 +95,9 @@ whatever values happen to be showing on screen at that moment.
   template's name is rejected and the field reverts.
 - **Switching** discards whatever's currently live and loads the other
   template's saved regions/manual inputs/targets in its place -- but only
-  after a confirmation prompt ("has unsaved changes -- discard and switch
-  anyway?") if the active template has changes it hasn't saved yet. Nothing
-  to lose means no prompt.
+  after a confirmation prompt naming the active template (e.g. `'Template
+  1' has unsaved changes -- discard and switch anyway?`) if it has changes
+  it hasn't saved yet. Nothing to lose means no prompt.
 - **Deleting** asks to confirm too (it can't be undone).
 - The **last-active template reloads automatically** the next time the app
   launches -- close the app with one selected and it's exactly where you
