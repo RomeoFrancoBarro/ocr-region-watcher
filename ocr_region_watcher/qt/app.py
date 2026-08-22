@@ -254,10 +254,24 @@ class App(QWidget):
         region_index = self._next_id
         left, top, width, height = rect
         name = self._next_region_name()
+        self._create_region(left, top, width, height, name, self._PAIRED_FORMULA_KEYS.get(region_index))
+        paired_name = self._PAIRED_MANUAL_INPUTS.get(region_index)
+        if paired_name is not None:
+            self._add_manual_input(paired_name)
+        self._update_status()
+
+    def _create_region(
+        self, left: int, top: int, width: int, height: int, name: str, formula_key: str | None,
+    ) -> RegionWatcher:
+        """Build, show, and register a region watcher from explicit
+        parameters -- shared by live '+ Add Region' drags (formula_key
+        inferred from creation order via _PAIRED_FORMULA_KEYS, above in
+        _on_add_region) and template restores (formula_key taken directly
+        from the saved snapshot, see _restore_snapshot)."""
         watcher = RegionWatcher(
             left, top, width, height, name,
             on_close=self._on_watcher_closed, on_change=self._on_watcher_changed,
-            formula_key=self._PAIRED_FORMULA_KEYS.get(region_index),
+            formula_key=formula_key,
         )
         watcher.show()
         self._resample(watcher)
@@ -265,10 +279,7 @@ class App(QWidget):
         self._add_region_row(watcher)
         if self.recognizer is None:
             watcher.set_lines(["loading OCR..."])
-        paired_name = self._PAIRED_MANUAL_INPUTS.get(region_index)
-        if paired_name is not None:
-            self._add_manual_input(paired_name)
-        self._update_status()
+        return watcher
 
     def _add_region_row(self, watcher: RegionWatcher) -> None:
         row = QWidget()
@@ -334,11 +345,25 @@ class App(QWidget):
         target_index = self._next_target_id
         x, y = point
         name = self._next_target_name()
+        self._create_target(x, y, name, target_index)
+
+    def _create_target(
+        self, x: int, y: int, name: str, number: int, *,
+        value_key: str | None = None, click_enabled: bool = True, paste_enabled: bool = True,
+    ) -> TargetMarker:
+        """Build, show, and register a target marker from explicit
+        parameters -- shared by live '+ Add Target' clicks (defaults: no
+        paste key yet, both toggles on) and template restores (all four
+        taken directly from the saved snapshot, see _restore_snapshot)."""
         target = TargetMarker(x, y, name, on_close=self._on_target_closed, on_change=self._on_target_changed)
-        target.number = target_index
+        target.number = number
+        target.value_key = value_key
+        target.click_enabled = click_enabled
+        target.paste_enabled = paste_enabled
         target.show()
         self.targets.append(target)
         self._add_target_row(target)
+        return target
 
     def _add_target_row(self, target: TargetMarker) -> None:
         container = QFrame()
@@ -371,13 +396,13 @@ class App(QWidget):
         # an all-or-nothing "click+paste" vs "click-only" choice. Click
         # always fires first when both are on (see _on_send_target).
         click_check = QCheckBox("click")
-        click_check.setChecked(True)
+        click_check.setChecked(target.click_enabled)
         click_check.setToolTip("Click this target's screen position when Send fires")
         click_check.toggled.connect(lambda checked: setattr(target, "click_enabled", checked))
         bottom_row.addWidget(click_check)
 
         paste_check = QCheckBox("paste")
-        paste_check.setChecked(True)
+        paste_check.setChecked(target.paste_enabled)
         paste_check.setToolTip(
             "Paste the current value when Send fires. With click also on, click happens first;"
             " with click off, pastes into whatever's already focused."
