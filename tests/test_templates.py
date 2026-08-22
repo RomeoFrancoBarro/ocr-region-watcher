@@ -19,10 +19,22 @@ class TemplateStoreTests(unittest.TestCase):
         self.assertEqual(store.names(), [])
         self.assertIsNone(store.get_last_active())
 
+    def test_missing_file_is_not_reported_as_a_load_error(self):
+        # A brand-new install has no file yet -- that's normal, not an
+        # error the app should surface a status message about.
+        store = TemplateStore(self.path)
+        self.assertIsNone(store.load_error)
+
     def test_corrupt_file_falls_back_to_empty(self):
         self.path.write_text("not valid json{{{", encoding="utf-8")
         store = TemplateStore(self.path)
         self.assertEqual(store.names(), [])
+
+    def test_corrupt_file_sets_load_error(self):
+        self.path.write_text("not valid json{{{", encoding="utf-8")
+        store = TemplateStore(self.path)
+        self.assertIsNotNone(store.load_error)
+        self.assertIn(self.path.name, store.load_error)
 
     def test_malformed_templates_data_falls_back_to_empty(self):
         self.path.write_text('{"templates": ["a", "b"]}', encoding="utf-8")

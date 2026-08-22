@@ -31,13 +31,24 @@ class TemplateStore:
         self.path = Path(path) if path is not None else DEFAULT_DATA_PATH
         self._templates: dict[str, dict] = {}
         self._last_active: str | None = None
+        # Set by load() when the file exists but couldn't be read or parsed
+        # -- not for the ordinary "no file yet" case (a brand-new install),
+        # which isn't an error. The app surfaces this once via a status
+        # message rather than a blocking dialog, per the "never crash on
+        # a corrupt file" contract -- but silently losing every saved
+        # template deserves *some* visible sign something went wrong.
+        self.load_error: str | None = None
         self.load()
 
     def load(self) -> None:
         try:
             raw = self.path.read_text(encoding="utf-8")
-        except OSError:
+        except FileNotFoundError:
             self._templates, self._last_active = {}, None
+            return
+        except OSError as exc:
+            self._templates, self._last_active = {}, None
+            self.load_error = f"couldn't read {self.path.name}: {exc}"
             return
         try:
             data = json.loads(raw)
@@ -57,8 +68,9 @@ class TemplateStore:
             }
             last_active = data.get("last_active")
             self._last_active = last_active if isinstance(last_active, str) else None
-        except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+        except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as exc:
             self._templates, self._last_active = {}, None
+            self.load_error = f"{self.path.name} is corrupt, ignoring it: {exc}"
 
     def _write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

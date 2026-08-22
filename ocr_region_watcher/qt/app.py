@@ -91,6 +91,8 @@ class App(QWidget):
         self.sequencer = EventSequencer(fire=self._on_send_target, on_status=self._on_event_status)
 
         self._build_ui()
+        if self.template_store.load_error:
+            self.template_status_label.setText(self.template_store.load_error)
         last_active = self.template_store.get_last_active()
         if last_active is not None and self.template_store.get(last_active) is not None:
             try:
