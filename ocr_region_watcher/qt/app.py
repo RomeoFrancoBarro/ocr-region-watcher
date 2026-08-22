@@ -27,6 +27,7 @@ from .. import formula, inject
 from ..capture import ScreenGrabber
 from ..colorcheck import sample_reference_color, still_locked
 from ..recognize import EasyOCRRecognizer
+from ..templates import TemplateStore
 from .events import EventSequencer
 from .manual_input import ManualInput
 from .overlay import snip_point, snip_region
@@ -78,9 +79,12 @@ class App(QWidget):
         self._next_manual_id = 1
         self._next_target_id = 1
         self._last_result: dict = {}
+        self.template_store = TemplateStore()
+        self.active_template: str | None = None
         self.sequencer = EventSequencer(fire=self._on_send_target, on_status=self._on_event_status)
 
         self._build_ui()
+        self._refresh_templates_tab()
         self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula -- present from launch
         self._load_recognizer_async()
 
@@ -105,6 +109,10 @@ class App(QWidget):
         events_content = QWidget()
         self._build_events_tab(events_content)
         tabs.addTab(events_content, "Events")
+
+        templates_content = QWidget()
+        self._build_templates_tab(templates_content)
+        tabs.addTab(templates_content, "Templates")
 
     def _build_main_tab(self, parent: QWidget) -> None:
         layout = QVBoxLayout(parent)
@@ -212,6 +220,38 @@ class App(QWidget):
         self.event_status_label.setWordWrap(True)
         layout.addWidget(self.event_status_label)
 
+    def _build_templates_tab(self, parent: QWidget) -> None:
+        layout = QVBoxLayout(parent)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        hint = QLabel(
+            "Save the whole live setup (regions, manual inputs, targets) under "
+            "a name, and switch between saved setups with one click."
+        )
+        hint.setStyleSheet("color: #949ba4;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        add_template_btn = QPushButton("+ Add Template")
+        add_template_btn.setObjectName("accent")
+        add_template_btn.clicked.connect(self._on_add_template)
+        layout.addWidget(add_template_btn)
+
+        template_scroll = QScrollArea()
+        template_scroll.setWidgetResizable(True)
+        template_content = QWidget()
+        self.template_rows_layout = QVBoxLayout(template_content)
+        self.template_rows_layout.setSpacing(6)
+        self.template_rows_layout.addStretch(1)
+        template_scroll.setWidget(template_content)
+        layout.addWidget(template_scroll, 1)
+
+        self.template_status_label = QLabel("")
+        self.template_status_label.setProperty("role", "status")
+        self.template_status_label.setWordWrap(True)
+        layout.addWidget(self.template_status_label)
+
     # -- manual (typed, not screen-read) inputs --------------------------
     def _next_manual_input_name(self) -> str:
         defaults = ["C"]
@@ -219,10 +259,11 @@ class App(QWidget):
         self._next_manual_id += 1
         return name
 
-    def _add_manual_input(self, name: str) -> None:
+    def _add_manual_input(self, name: str) -> ManualInput:
         entry = ManualInput(name, on_remove=self._on_manual_input_removed)
         self.manual_inputs.append(entry)
         self.manual_inputs_layout.addWidget(entry)
+        return entry
 
     def _on_manual_input_removed(self, entry: ManualInput) -> None:
         if entry in self.manual_inputs:
@@ -435,6 +476,169 @@ class App(QWidget):
 
     def _on_target_changed(self, target: TargetMarker) -> None:
         pass  # just moved -- nothing to resample, no capture/OCR involved
+
+    # -- templates: saved snapshots of the whole live setup ---------------
+    def _capture_snapshot(self) -> dict:
+        return {
+            "regions": [
+                {
+                    "name": w.name, "formula_key": w.formula_key,
+                    "left": w.left, "top": w.top, "width": w.region_w, "height": w.region_h,
+                }
+                for w in self.watchers
+            ],
+            "manual_inputs": [
+                {"name": m.name, "value": m.value_edit.text()} for m in self.manual_inputs
+            ],
+            "targets": [
+                {
+                    "name": t.name, "x": t.x, "y": t.y, "value_key": t.value_key,
+                    "click_enabled": t.click_enabled, "paste_enabled": t.paste_enabled,
+                }
+                for t in self.targets
+            ],
+        }
+
+    def _teardown_live_state(self) -> None:
+        """Removes every live region/target/manual input via their own
+        existing close/remove methods (not the bare Qt .close() used by
+        closeEvent below -- those also clean up self.watchers/targets/
+        manual_inputs and their rows, which matters here since the app
+        keeps running afterward)."""
+        for watcher in list(self.watchers):
+            watcher._close()
+        for target in list(self.targets):
+            target._close()
+        for entry in list(self.manual_inputs):
+            entry._remove()
+
+    def _restore_snapshot(self, data: dict) -> None:
+        for r in data.get("regions", []):
+            self._create_region(r["left"], r["top"], r["width"], r["height"], r["name"], r.get("formula_key"))
+        # Regions restored above never call _next_region_name(), so
+        # _next_id wouldn't otherwise advance -- without this, a
+        # subsequently live-dragged region would reuse "Red"/"Blue" and
+        # accidentally re-trigger the PM/PW/Budget auto-pairing convenience
+        # meant for the first two regions of a fresh session.
+        self._next_id = len(self.watchers) + 1
+
+        for m in data.get("manual_inputs", []):
+            entry = self._add_manual_input(m["name"])
+            entry.value_edit.setText(m.get("value", ""))
+
+        for t in data.get("targets", []):
+            number = self._next_target_id
+            self._next_target_id += 1
+            self._create_target(
+                t["x"], t["y"], t["name"], number,
+                value_key=t.get("value_key"),
+                click_enabled=t.get("click_enabled", True),
+                paste_enabled=t.get("paste_enabled", True),
+            )
+        self._update_status()
+
+    def _on_add_template(self) -> None:
+        self._teardown_live_state()
+        self.active_template = self.template_store.next_default_name()
+        self._refresh_templates_tab()
+
+    def _on_template_clicked(self, name: str) -> None:
+        self._load_template(name)
+
+    def _load_template(self, name: str) -> None:
+        data = self.template_store.get(name)
+        if data is None:
+            return
+        self._teardown_live_state()
+        self._restore_snapshot(data)
+        self.active_template = name
+        try:
+            self.template_store.set_last_active(name)
+        except OSError as exc:
+            self.template_status_label.setText(f"loaded '{name}', but couldn't remember it for next launch: {exc}")
+        self._refresh_templates_tab()
+
+    def _on_template_save(self, name: str) -> None:
+        if name != self.active_template:
+            return
+        try:
+            self.template_store.save(name, self._capture_snapshot())
+            self.template_store.set_last_active(name)
+        except OSError as exc:
+            self.template_status_label.setText(f"couldn't save '{name}': {exc}")
+            return
+        self.template_status_label.setText(f"saved '{name}'")
+        self._refresh_templates_tab()
+
+    def _on_template_delete(self, name: str) -> None:
+        try:
+            self.template_store.delete(name)
+        except OSError as exc:
+            self.template_status_label.setText(f"couldn't delete '{name}': {exc}")
+            return
+        if name == self.active_template:
+            self.active_template = None
+        self._refresh_templates_tab()
+
+    def _on_template_renamed(self, old_name: str, name_edit: QLineEdit) -> None:
+        new_name = name_edit.text().strip()
+        if not new_name or new_name == old_name:
+            name_edit.setText(old_name)
+            return
+        try:
+            self.template_store.rename(old_name, new_name)
+        except OSError as exc:
+            name_edit.setText(old_name)
+            self.template_status_label.setText(f"couldn't rename: {exc}")
+            return
+        if self.active_template == old_name:
+            self.active_template = new_name
+        self._refresh_templates_tab()
+
+    def _refresh_templates_tab(self) -> None:
+        while self.template_rows_layout.count() > 1:  # leave the trailing stretch alone
+            item = self.template_rows_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        names = list(self.template_store.names())
+        if self.active_template is not None and self.active_template not in names:
+            names.append(self.active_template)  # a just-added, not-yet-saved template
+
+        for index, name in enumerate(names):
+            self.template_rows_layout.insertWidget(index, self._build_template_row(name))
+
+    def _build_template_row(self, name: str) -> QFrame:
+        is_active = name == self.active_template
+        row = QFrame()
+        row.setProperty("role", "card")
+        if is_active:
+            row.setStyleSheet("border: 1px solid #5865f2;")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(8, 6, 8, 6)
+        row_layout.setSpacing(6)
+
+        name_edit = QLineEdit(name)
+        name_edit.setFont(MONO_SMALL)
+        row_layout.addWidget(name_edit, 1)
+        name_edit.editingFinished.connect(lambda n=name, e=name_edit: self._on_template_renamed(n, e))
+
+        switch_btn = QPushButton("Active" if is_active else "Switch")
+        switch_btn.setEnabled(not is_active)
+        switch_btn.clicked.connect(lambda checked=False, n=name: self._on_template_clicked(n))
+        row_layout.addWidget(switch_btn)
+
+        save_btn = QPushButton("Save")
+        save_btn.setEnabled(is_active)
+        save_btn.clicked.connect(lambda checked=False, n=name: self._on_template_save(n))
+        row_layout.addWidget(save_btn)
+
+        delete_btn = QPushButton("Delete")
+        delete_btn.setObjectName("danger")
+        delete_btn.clicked.connect(lambda checked=False, n=name: self._on_template_delete(n))
+        row_layout.addWidget(delete_btn)
+
+        return row
 
     def _click_target(self, target: TargetMarker, action) -> None:
         """Run `action` (whatever inject.send() call this Send actually
