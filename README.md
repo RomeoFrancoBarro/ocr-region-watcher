@@ -80,8 +80,9 @@ click -- handy for keeping a separate calibrated layout per site/config
 instead of re-dragging every region and retyping every value each time you
 switch between them. A template is a snapshot of the *entire* layout --
 every region's position, size, and name; every manual input's name and
-current text; every target's position and click/paste settings -- not just
-whatever values happen to be showing on screen at that moment.
+current text; every target's position, name, paste key, and click/paste
+settings -- not just whatever values happen to be showing on screen at that
+moment.
 
 - **+ Add Template** starts a new one (default-named `Template 1`,
   `Template 2`, ...) and clears whatever's currently live so you calibrate

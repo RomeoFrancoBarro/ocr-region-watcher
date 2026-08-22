@@ -1,6 +1,6 @@
-"""Main application window -- a tabbed window (Main / Events) driving the
-shared backend (formula.py, recognize.py, capture.py, inject.py,
-colorcheck.py) through a Qt widget layer.
+"""Main application window -- a tabbed window (Main / Events / Templates)
+driving the shared backend (formula.py, recognize.py, capture.py,
+inject.py, colorcheck.py) through a Qt widget layer.
 """
 from __future__ import annotations
 
@@ -82,6 +82,12 @@ class App(QWidget):
         self._last_result: dict = {}
         self.template_store = TemplateStore()
         self.active_template: str | None = None
+        # What "nothing has changed yet" looks like for an active template
+        # that has never been saved -- captured right after + Add Template
+        # seeds it, since that seeding (the "C" manual input) is itself
+        # already a difference from a truly empty snapshot. See
+        # _confirm_discard_if_dirty.
+        self._pending_baseline: dict | None = None
         self.sequencer = EventSequencer(fire=self._on_send_target, on_status=self._on_event_status)
 
         self._build_ui()
@@ -90,6 +96,11 @@ class App(QWidget):
             try:
                 self._load_template(last_active)
             except (KeyError, TypeError, ValueError):
+                # A restore that died partway through (e.g. the second
+                # region's saved dict is missing a key) leaves everything it
+                # already recreated on screen -- clear that out before
+                # falling back, so the blank-slate fallback really is blank.
+                self._teardown_live_state()
                 self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula -- present from launch
         else:
             self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula -- present from launch
@@ -512,13 +523,24 @@ class App(QWidget):
         existing close/remove methods (not the bare Qt .close() used by
         closeEvent below -- those also clean up self.watchers/targets/
         manual_inputs and their rows, which matters here since the app
-        keeps running afterward)."""
+        keeps running afterward).
+
+        The event sequence goes with them: its steps hold direct references
+        to the target markers destroyed below, so keeping them would leave
+        the Events tab listing steps that can never fire again."""
+        self.sequencer.stop()
+        self.sequencer.events.clear()
         for watcher in list(self.watchers):
             watcher._close()
         for target in list(self.targets):
             target._close()
         for entry in list(self.manual_inputs):
             entry._remove()
+        # Not redundant with the rebuild each _on_target_closed triggers:
+        # that one doesn't fire when there were no live targets left to
+        # close, which is exactly the case after a step's target was
+        # removed by hand and only its dangling step remained.
+        self._rebuild_event_rows()
 
     def _restore_snapshot(self, data: dict) -> None:
         for r in data.get("regions", []):
@@ -544,24 +566,52 @@ class App(QWidget):
                 paste_enabled=t.get("paste_enabled", True),
             )
         self._update_status()
+        # Teardown cleared the event sequence (those steps pointed at the
+        # targets it destroyed); rebuild the rows so the Events tab shows
+        # that plainly instead of going quietly stale.
+        self._rebuild_event_rows()
+
+    def _confirm_discard_if_dirty(self) -> bool:
+        """True if it's safe to tear down the current live state -- either
+        nothing would be lost, or the user explicitly confirmed discarding
+        it. Shared by Switch and Add Template, the two actions that tear
+        down live state."""
+        if self.active_template is None:
+            return True
+        current = self._capture_snapshot()
+        saved = self.template_store.get(self.active_template)
+        # A template that's only ever existed in memory has no saved
+        # snapshot to compare against -- its baseline is whatever + Add
+        # Template seeded (see _pending_baseline), not an empty snapshot.
+        baseline = saved if saved is not None else (self._pending_baseline or empty_snapshot())
+        if current == baseline:
+            return True
+        reply = QMessageBox.question(
+            self, "Unsaved changes",
+            f"'{self.active_template}' has unsaved changes -- discard and switch anyway?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        return reply == QMessageBox.Yes
 
     def _on_add_template(self) -> None:
+        if not self._confirm_discard_if_dirty():
+            return
         self._teardown_live_state()
+        # Back to a fresh-launch state, counters included -- otherwise the
+        # first two regions dragged after this wouldn't get the PM/PW/Budget
+        # auto-pairing a genuinely fresh session's first two regions get.
+        self._next_id = self._next_manual_id = self._next_target_id = 1
         self.active_template = self.template_store.next_default_name()
+        self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula -- re-seeded here exactly like a fresh launch
+        self._pending_baseline = self._capture_snapshot()
         self._refresh_templates_tab()
 
     def _on_template_clicked(self, name: str) -> None:
-        if self.active_template is not None and self.active_template != name:
-            current = self._capture_snapshot()
-            baseline = self.template_store.get(self.active_template) or empty_snapshot()
-            if current != baseline:
-                reply = QMessageBox.question(
-                    self, "Unsaved changes",
-                    f"'{self.active_template}' has unsaved changes -- discard and switch anyway?",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-                )
-                if reply != QMessageBox.Yes:
-                    return
+        # Re-clicking the already-active template just reloads it: the live
+        # state *is* that template's, so a switch away is the only thing
+        # that can lose unsaved work.
+        if self.active_template != name and not self._confirm_discard_if_dirty():
+            return
         self._load_template(name)
 
     def _load_template(self, name: str) -> None:
@@ -645,7 +695,11 @@ class App(QWidget):
         row = QFrame()
         row.setProperty("role", "card")
         if is_active:
-            row.setStyleSheet("border: 1px solid #5865f2;")
+            # Selector-scoped (like every rule in style.py) so the accent
+            # border lands on the frame alone -- an unscoped stylesheet
+            # propagates to every child, outlining the row's name field and
+            # all three buttons too.
+            row.setStyleSheet('QFrame[role="card"] { border: 1px solid #5865f2; }')
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(8, 6, 8, 6)
         row_layout.setSpacing(6)
