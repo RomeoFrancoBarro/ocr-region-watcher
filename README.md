@@ -90,28 +90,22 @@ click **+ Clear** on the Templates tab, which wipes the board without
 touching anything already saved.
 
 **Managing** (Templates tab -- third tab, after Main and Events): every
-saved template gets its own row with four controls:
+saved template gets its own row with three controls:
 
-- **Switch** -- loads it live for viewing/using (e.g. actively monitoring
-  that site), but its **Save** button stays off, so a stray drag can't
-  accidentally overwrite it.
-- **Edit** -- loads it live *and* turns Save on, for when you actually want
-  to adjust it. Clicking Edit on a row you already Switched to just turns
-  Save on in place, without reloading anything; clicking Switch on a row
-  you're already Editing turns Save back off the same way.
-- **Save** -- persists your changes back into that template. Only enabled
-  while you got there via Edit.
+- **Switch** -- loads it live: regions/targets/manual inputs reappear
+  exactly as saved. Move things, retype a value, then hit **Save** (only
+  enabled once it's the active one) to persist the change back into it.
 - **Delete** -- asks to confirm first (can't be undone).
 
-Both Switch and Edit discard whatever's currently live first -- but only
-after a confirmation prompt if it has changes that were never saved (Nothing
-to lose means no prompt). **Renaming** is inline: click into a row's name
+Switching discards whatever's currently live first -- but only after a
+confirmation prompt if it has changes that were never saved (nothing to
+lose means no prompt). **Renaming** is inline: click into a row's name
 field, edit it, then click away or press Enter -- a blank name or one that
 collides with another template's is rejected and the field reverts.
 
 The **last-active template reloads automatically** the next time the app
-launches (view-only, same as Switch) -- close the app with one loaded and
-it's exactly where you left it on the next run.
+launches -- close the app with one loaded and it's exactly where you left it
+on the next run.
 
 Saved templates live in `data/templates.json`. That's per-machine data, not
 source, so `data/` is gitignored -- it's never committed to the repo.

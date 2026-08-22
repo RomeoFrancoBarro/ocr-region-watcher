@@ -83,11 +83,6 @@ class App(QWidget):
         self._last_result: dict = {}
         self.template_store = TemplateStore()
         self.active_template: str | None = None
-        # True only when the active template was reached via Edit (or
-        # promoted in place from a Switch) -- Switch alone loads it live for
-        # viewing/using but leaves this False, so a stray drag can't
-        # accidentally overwrite a saved template through its Save button.
-        self.editable = False
         # What "nothing has changed yet" looks like when nothing is loaded
         # from a saved template -- captured by _seed_blank_slate(), since
         # the "C" manual input it seeds is itself already a difference from
@@ -101,7 +96,7 @@ class App(QWidget):
         last_active = self.template_store.get_last_active()
         if last_active is not None and self.template_store.get(last_active) is not None:
             try:
-                self._load_template(last_active, editable=False)
+                self._load_template(last_active)
             except (KeyError, TypeError, ValueError):
                 # A restore that died partway through (e.g. the second
                 # region's saved dict is missing a key) leaves everything it
@@ -265,8 +260,8 @@ class App(QWidget):
         layout.setSpacing(8)
 
         hint = QLabel(
-            "Switch to view/use a saved setup, or Edit to load it and let Save persist your "
-            "changes back into it. Save a new one from the Main tab's 'Save as Template' button."
+            "Switch to load a saved setup live -- move things, then Save to persist changes. "
+            "Save a new one from the Main tab's 'Save as Template' button."
         )
         hint.setStyleSheet("color: #949ba4;")
         hint.setWordWrap(True)
@@ -596,7 +591,7 @@ class App(QWidget):
         """True if it's safe to tear down the current live state -- either
         nothing would be lost, or the user explicitly confirmed discarding
         it. Shared by every action that tears down or replaces live state
-        (clearing to a new setup, Switch, Edit)."""
+        (clearing to a new setup, Switch)."""
         current = self._capture_snapshot()
         if self.active_template is not None:
             # active_template, whenever set, always already names an entry
@@ -626,7 +621,6 @@ class App(QWidget):
         setup against."""
         self._next_id = self._next_manual_id = self._next_target_id = 1
         self.active_template = None
-        self.editable = False
         self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula
         self._pending_baseline = self._capture_snapshot()
 
@@ -637,34 +631,21 @@ class App(QWidget):
         self._seed_blank_slate()
         self._refresh_templates_tab()
 
-    def _activate_template(self, name: str, *, editable: bool) -> None:
-        """Common path for both Switch and Edit -- the only difference
-        between them is this `editable` flag. Re-activating the template
-        that's already loaded just flips the flag in place (nothing to
-        tear down or lose); activating a different one goes through the
-        full discard-if-dirty + reload path."""
-        if self.active_template == name:
-            self.editable = editable
-            self._refresh_templates_tab()
-            return
+    def _on_template_clicked(self, name: str) -> None:
+        # The row's Switch button is already disabled while name is the
+        # active template (see _build_template_row), so this only ever
+        # fires for a *different* template -- nothing to no-op here.
         if not self._confirm_discard_if_dirty():
             return
-        self._load_template(name, editable=editable)
+        self._load_template(name)
 
-    def _on_template_switch_clicked(self, name: str) -> None:
-        self._activate_template(name, editable=False)
-
-    def _on_template_edit_clicked(self, name: str) -> None:
-        self._activate_template(name, editable=True)
-
-    def _load_template(self, name: str, *, editable: bool) -> None:
+    def _load_template(self, name: str) -> None:
         data = self.template_store.get(name)
         if data is None:
             return
         self._teardown_live_state()
         self._restore_snapshot(data)
         self.active_template = name
-        self.editable = editable
         try:
             self.template_store.set_last_active(name)
         except OSError as exc:
@@ -690,12 +671,11 @@ class App(QWidget):
             self.save_template_status_label.setText(f"couldn't save: {exc}")
             return
         self.active_template = name
-        self.editable = True
         self.save_template_status_label.setText(f"saved as '{name}'")
         self._refresh_templates_tab()
 
     def _on_template_save(self, name: str) -> None:
-        if name != self.active_template or not self.editable:
+        if name != self.active_template:
             return
         try:
             self.template_store.save(name, self._capture_snapshot())
@@ -721,7 +701,6 @@ class App(QWidget):
             return
         if name == self.active_template:
             self.active_template = None
-            self.editable = False
         self._refresh_templates_tab()
 
     def _on_template_renamed(self, old_name: str, name_edit: QLineEdit) -> None:
@@ -761,14 +740,13 @@ class App(QWidget):
 
     def _build_template_row(self, name: str) -> QFrame:
         is_active = name == self.active_template
-        is_editable_now = is_active and self.editable
         row = QFrame()
         row.setProperty("role", "card")
         if is_active:
             # Selector-scoped (like every rule in style.py) so the accent
             # border lands on the frame alone -- an unscoped stylesheet
             # propagates to every child, outlining the row's name field and
-            # all four buttons too.
+            # all three buttons too.
             row.setStyleSheet('QFrame[role="card"] { border: 1px solid #5865f2; }')
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(8, 6, 8, 6)
@@ -779,27 +757,14 @@ class App(QWidget):
         row_layout.addWidget(name_edit, 1)
         name_edit.editingFinished.connect(lambda n=name, e=name_edit: self._on_template_renamed(n, e))
 
-        # Switch (view/use, Save stays off) and Edit (Save turns on) are
-        # deliberately separate actions, not two labels for the same one --
-        # loading a template to actively monitor a site shouldn't leave it
-        # one stray drag away from being overwritten. Re-clicking Edit on a
-        # row that's already active-but-view-only just promotes it in
-        # place (see _activate_template); Switch on an already-editable
-        # active row demotes it back, same way, no reload either time.
-        switch_btn = QPushButton("Active" if (is_active and not self.editable) else "Switch")
-        switch_btn.setEnabled(not (is_active and not self.editable))
-        switch_btn.setToolTip("Load live for viewing/using -- Save stays off unless you Edit it")
-        switch_btn.clicked.connect(lambda checked=False, n=name: self._on_template_switch_clicked(n))
+        switch_btn = QPushButton("Active" if is_active else "Switch")
+        switch_btn.setEnabled(not is_active)
+        switch_btn.setToolTip("Load this template live -- move things, then Save to persist changes")
+        switch_btn.clicked.connect(lambda checked=False, n=name: self._on_template_clicked(n))
         row_layout.addWidget(switch_btn)
 
-        edit_btn = QPushButton("Editing" if is_editable_now else "Edit")
-        edit_btn.setEnabled(not is_editable_now)
-        edit_btn.setToolTip("Load live and let Save persist your changes back into it")
-        edit_btn.clicked.connect(lambda checked=False, n=name: self._on_template_edit_clicked(n))
-        row_layout.addWidget(edit_btn)
-
         save_btn = QPushButton("Save")
-        save_btn.setEnabled(is_editable_now)
+        save_btn.setEnabled(is_active)
         save_btn.clicked.connect(lambda checked=False, n=name: self._on_template_save(n))
         row_layout.addWidget(save_btn)
 
