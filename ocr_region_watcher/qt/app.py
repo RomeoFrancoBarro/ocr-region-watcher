@@ -28,7 +28,7 @@ from .. import formula, inject
 from ..capture import ScreenGrabber
 from ..colorcheck import sample_reference_color, still_locked
 from ..recognize import EasyOCRRecognizer
-from ..templates import TemplateStore
+from ..templates import TemplateStore, empty_snapshot
 from .events import EventSequencer
 from .manual_input import ManualInput
 from .overlay import snip_point, snip_region
@@ -544,6 +544,17 @@ class App(QWidget):
         self._refresh_templates_tab()
 
     def _on_template_clicked(self, name: str) -> None:
+        if self.active_template is not None and self.active_template != name:
+            current = self._capture_snapshot()
+            baseline = self.template_store.get(self.active_template) or empty_snapshot()
+            if current != baseline:
+                reply = QMessageBox.question(
+                    self, "Unsaved changes",
+                    f"'{self.active_template}' has unsaved changes -- discard and switch anyway?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                )
+                if reply != QMessageBox.Yes:
+                    return
         self._load_template(name)
 
     def _load_template(self, name: str) -> None:
