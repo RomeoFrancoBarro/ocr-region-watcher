@@ -72,6 +72,40 @@ you clicked its Send button, never on a timer or because a value changed.
   across a multi-step sequence -- e.g. Send while named `M` (pastes M),
   rename to `W`, Send again (pastes W into that same screen position).
 
+## Templates
+
+The **Templates** tab (third tab, after Main and Events) saves the whole
+live setup under a name, and lets you switch between saved setups with one
+click -- handy for keeping a separate calibrated layout per site/config
+instead of re-dragging every region and retyping every value each time you
+switch between them. A template is a snapshot of the *entire* layout --
+every region's position, size, and name; every manual input's name and
+current text; every target's position and click/paste settings -- not just
+whatever values happen to be showing on screen at that moment.
+
+- **+ Add Template** starts a new one (default-named `Template 1`,
+  `Template 2`, ...) and clears whatever's currently live so you calibrate
+  it from scratch. It isn't written to disk until you hit **Save**.
+- Each template gets its own row: its name (editable), a **Switch**/
+  **Active** button (reads **Active** and is disabled for whichever
+  template is currently loaded), a **Save** button (only enabled for the
+  active one), and a **Delete** button.
+- **Renaming is inline** -- click into the name field, edit it, then click
+  away or press Enter. A blank name or one that collides with another
+  template's name is rejected and the field reverts.
+- **Switching** discards whatever's currently live and loads the other
+  template's saved regions/manual inputs/targets in its place -- but only
+  after a confirmation prompt ("has unsaved changes -- discard and switch
+  anyway?") if the active template has changes it hasn't saved yet. Nothing
+  to lose means no prompt.
+- **Deleting** asks to confirm too (it can't be undone).
+- The **last-active template reloads automatically** the next time the app
+  launches -- close the app with one selected and it's exactly where you
+  left it on the next run, no need to switch back to it by hand.
+
+Saved templates live in `data/templates.json`. That's per-machine data, not
+source, so `data/` is gitignored -- it's never committed to the repo.
+
 ## Setup
 
 ```
