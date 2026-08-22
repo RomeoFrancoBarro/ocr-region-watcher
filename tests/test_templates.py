@@ -24,6 +24,11 @@ class TemplateStoreTests(unittest.TestCase):
         store = TemplateStore(self.path)
         self.assertEqual(store.names(), [])
 
+    def test_malformed_templates_data_falls_back_to_empty(self):
+        self.path.write_text('{"templates": ["a", "b"]}', encoding="utf-8")
+        store = TemplateStore(self.path)
+        self.assertEqual(store.names(), [])
+
     def test_save_then_get_round_trips(self):
         store = TemplateStore(self.path)
         snapshot = {

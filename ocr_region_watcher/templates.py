@@ -43,7 +43,7 @@ class TemplateStore:
             data = json.loads(raw)
             self._templates = dict(data.get("templates", {}))
             self._last_active = data.get("last_active")
-        except (json.JSONDecodeError, AttributeError):
+        except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
             self._templates, self._last_active = {}, None
 
     def _write(self) -> None:
