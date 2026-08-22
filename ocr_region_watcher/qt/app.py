@@ -87,7 +87,10 @@ class App(QWidget):
         self._build_ui()
         last_active = self.template_store.get_last_active()
         if last_active is not None and self.template_store.get(last_active) is not None:
-            self._load_template(last_active)
+            try:
+                self._load_template(last_active)
+            except (KeyError, TypeError, ValueError):
+                self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula -- present from launch
         else:
             self._add_manual_input(self._next_manual_input_name())  # C is needed by every run of this formula -- present from launch
         self._refresh_templates_tab()
