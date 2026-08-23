@@ -49,44 +49,48 @@ def _section_label(text: str) -> QLabel:
 
 def _row_card(*, layout_cls=QVBoxLayout) -> tuple[QFrame, QVBoxLayout | QHBoxLayout]:
     """A subtly-bordered rounded frame for ONE row -- region/manual-input/
-    target rows are each their own card, not one shared frame wrapping a
-    whole section's worth of rows (see _rows_container). See style.py's
-    QFrame[role=card]."""
+    target rows are each their own card, sitting inside their section's
+    own gray box (see _collapsible_section/_rows_container). A distinct
+    role from the shared QFrame[role=card] the Events/Templates tabs use
+    -- one shade lighter, so it reads as a layer INSIDE the section box
+    rather than blending into it. See style.py's QFrame[role=row-card]."""
     frame = QFrame()
-    frame.setProperty("role", "card")
+    frame.setProperty("role", "row-card")
     layout = layout_cls(frame)
-    layout.setContentsMargins(10, 8, 10, 8)
+    layout.setContentsMargins(10, 6, 10, 6)
     layout.setSpacing(4)
     return frame, layout
 
 
 def _rows_container() -> tuple[QWidget, QVBoxLayout]:
-    """A plain vertical list for a collapsible section's rows -- no border
-    of its own, just spacing between the individual row cards inside it."""
+    """A plain vertical list of a collapsible section's row cards, inset
+    from the section box's own edges (see _collapsible_section) -- no
+    border of its own, just spacing between the individual row cards."""
     container = QWidget()
     layout = QVBoxLayout(container)
-    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setContentsMargins(10, 0, 10, 10)
     layout.setSpacing(6)
     return container, layout
 
 
 def _collapsible_section(title: str, content: QWidget, *, expanded: bool = True) -> tuple[QWidget, QLabel]:
-    """Wraps `content` (a card, usually) behind a clickable header that
-    shows/hides it, plus a count badge on the header's right edge (the
-    caller updates its text whenever the section's row count changes --
-    see app.py's _update_counts). Pure session-local UI state -- not
-    saved to templates, not restored across restarts, and every section
-    starts expanded on a fresh launch (a returning user shouldn't find
-    their own regions/targets hidden without having collapsed them
-    themselves)."""
-    wrapper = QWidget()
+    """A whole section (REGIONS/MANUAL INPUTS/TARGETS) as its own gray
+    rounded box -- easy to spot each section at a glance -- with a
+    clickable header (chevron + title + a count badge the caller keeps in
+    sync, see app.py's _update_counts) that shows/hides `content` (usually
+    _rows_container()'s result). Pure session-local UI state -- not saved
+    to templates, not restored across restarts, and every section starts
+    expanded on a fresh launch (a returning user shouldn't find their own
+    regions/targets hidden without having collapsed them themselves)."""
+    wrapper = QFrame()
+    wrapper.setProperty("role", "section-box")
     outer = QVBoxLayout(wrapper)
     outer.setContentsMargins(0, 0, 0, 0)
     outer.setSpacing(4)
 
     header = QWidget()
     header_layout = QHBoxLayout(header)
-    header_layout.setContentsMargins(0, 0, 0, 0)
+    header_layout.setContentsMargins(10, 8, 10, 0)
     header_layout.setSpacing(6)
 
     toggle_btn = QPushButton()
@@ -96,7 +100,7 @@ def _collapsible_section(title: str, content: QWidget, *, expanded: bool = True)
     toggle_btn.setStyleSheet(
         "QPushButton { text-align: left; background: transparent; border: none;"
         " color: #949ba4; font-size: 8pt; font-weight: 600; padding: 4px 2px; border-radius: 4px; }"
-        "QPushButton:hover { background-color: #26282c; }"
+        "QPushButton:hover { background-color: #2f3136; }"
     )
 
     def _set_text(checked: bool) -> None:

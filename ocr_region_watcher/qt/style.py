@@ -93,4 +93,14 @@ QFrame[role="card"] {
     border: 1px solid #3f4147;
     border-radius: 6px;
 }
+QFrame[role="section-box"] {
+    background-color: #26282c;
+    border: 1px solid #3f4147;
+    border-radius: 6px;
+}
+QFrame[role="row-card"] {
+    background-color: #2b2d31;
+    border: 1px solid #3f4147;
+    border-radius: 4px;
+}
 """
