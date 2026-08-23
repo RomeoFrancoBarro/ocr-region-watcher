@@ -114,7 +114,8 @@ def _collapsible_section(title: str, content: QWidget, *, expanded: bool = True)
         content.setVisible(checked)
 
     toggle_btn.toggled.connect(_on_toggled)
-    header_layout.addWidget(toggle_btn, 1)
+    header_layout.addWidget(toggle_btn)  # no stretch -- hugs its own chevron+title text, so :hover only highlights that, not the whole header's width
+    header_layout.addStretch(1)
 
     count_badge = QLabel("0")
     count_badge.setAlignment(Qt.AlignCenter)
