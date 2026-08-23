@@ -32,6 +32,7 @@ from .style import MONO_SMALL
 BORDER = 2  # thin, matching the minimal-overlay mockup -- the old header+strip design used a thick 6px border, but that's not what a click-through interior needs; only HANDLE below governs how wide the actual draggable/resizable margin is
 CORNER_RADIUS = 4  # matches the mockup's rounded frame corners
 HANDLE = 12
+PAD = HANDLE // 2 + 2  # room reserved on every side of the frame so all 4 corner handles paint in full -- a handle centered exactly on a corner extends HANDLE//2 past it in every direction; without this, Qt simply clips whatever a widget paints outside its own (0,0)-to-(width,height) rect, so the nw/ne/sw handles used to render only half-visible (only the se corner had the chip's own margin to grow into)
 MIN_SIZE = 24
 CHIP_MARGIN = 10  # extra transparent space past the frame's own edge, purely so the corner chip can hang slightly outside the border without ever overlapping the click-through interior
 CHIP_OVERLAP = 8  # how far the chip's top-left corner tucks inside the frame's own bottom-right corner -- see _resize_and_reposition_chip
@@ -156,25 +157,28 @@ class RegionWatcher(QWidget):
     def _resize_and_reposition_chip(self) -> None:
         """Sizes this widget to fit the frame PLUS whatever the chip's
         current text actually needs, then positions the chip tucked into
-        the frame's bottom-right corner.
+        the frame's bottom-right corner. PAD reserves that same room on
+        every OTHER side too, purely so the nw/ne/sw corner handles paint
+        in full -- see PAD's own comment.
 
-        The chip's top-left is pinned CHIP_OVERLAP inside that corner --
-        never shifted left/up to avoid clipping, the widget grows to fit
-        the chip instead. A recognized value (or, for TargetMarker, a
-        target's name) can be wider than the frame itself is small (their
-        real Red region is 45px wide; "$1,234.56" alone is wider than
-        that) -- the old version clamped the chip's position to keep it
-        inside a fixed-size margin, which for anything wider than that
-        margin shoved the chip left on top of the frame's own content
-        instead, and clipped whatever didn't fit. Growing the widget
-        keeps the chip fully visible and never overlapping the frame.
+        The chip's top-left is pinned CHIP_OVERLAP inside the frame's
+        bottom-right corner -- never shifted left/up to avoid clipping,
+        the widget grows to fit the chip instead. A recognized value (or,
+        for TargetMarker, a target's name) can be wider than the frame
+        itself is small (their real Red region is 45px wide; "$1,234.56"
+        alone is wider than that) -- the old version clamped the chip's
+        position to keep it inside a fixed-size margin, which for
+        anything wider than that margin shoved the chip left on top of
+        the frame's own content instead, and clipped whatever didn't fit.
+        Growing the widget keeps the chip fully visible and never
+        overlapping the frame.
         """
         self.value_chip.adjustSize()
-        chip_x = max(0, self.region_w - CHIP_OVERLAP)
-        chip_y = max(0, self.region_h - CHIP_OVERLAP)
-        total_w = max(self.region_w + CHIP_MARGIN, chip_x + self.value_chip.width())
-        total_h = max(self.region_h + CHIP_MARGIN, chip_y + self.value_chip.height())
-        self.setGeometry(self.left, self.top, total_w, total_h)
+        chip_x = PAD + max(0, self.region_w - CHIP_OVERLAP)
+        chip_y = PAD + max(0, self.region_h - CHIP_OVERLAP)
+        total_w = max(self.region_w + 2 * PAD, chip_x + self.value_chip.width())
+        total_h = max(self.region_h + 2 * PAD, chip_y + self.value_chip.height())
+        self.setGeometry(self.left - PAD, self.top - PAD, total_w, total_h)
 
         # The mask is everything EXCEPT the true interior (inset from the
         # capture rect's own edges, same inset capture_rect() uses) --
@@ -182,11 +186,13 @@ class RegionWatcher(QWidget):
         # clickable; the interior is excluded from the window's hit-test
         # region entirely, which is what makes it genuinely click-through.
         # The interior itself is sized off region_w/region_h alone, never
-        # off the chip, so a long value can never shrink it.
+        # off the chip, so a long value can never shrink it. It's offset
+        # by PAD to land in the same place on screen as before -- PAD
+        # shifted the whole widget's origin, not the frame's true position.
         inset = max(BORDER, HANDLE // 2)
         full = QRegion(0, 0, total_w, total_h)
         interior = QRegion(
-            inset, inset, max(self.region_w - 2 * inset, 0), max(self.region_h - 2 * inset, 0)
+            PAD + inset, PAD + inset, max(self.region_w - 2 * inset, 0), max(self.region_h - 2 * inset, 0)
         )
         self.setMask(full.subtracted(interior))
 
@@ -209,6 +215,12 @@ class RegionWatcher(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         w, h = self.region_w, self.region_h
+        # Everything below is drawn in the FRAME's own coordinate space
+        # (0,0 at the frame's true top-left), then shifted by PAD in one
+        # place -- PAD is the room reserved around the frame so every
+        # corner handle paints in full instead of getting clipped by the
+        # widget's own edges (see PAD's own comment).
+        painter.translate(PAD, PAD)
 
         # Same reasoning as _style_chip: locked draws in this region's own
         # color; lost always draws in the shared alert color AND switches
@@ -259,6 +271,10 @@ class RegionWatcher(QWidget):
 
     # -- mouse: move / resize / close ------------------------------------
     def _corner_at(self, x: int, y: int) -> str | None:
+        """x, y are raw widget-local mouse coordinates -- shift back into
+        the frame's own coordinate space (see paintEvent's PAD translate)
+        before comparing against region_w/region_h."""
+        x, y = x - PAD, y - PAD
         w, h = self.region_w, self.region_h
         near_left, near_right = 0 <= x <= HANDLE, w - HANDLE <= x <= w
         near_top, near_bottom = 0 <= y <= HANDLE, h - HANDLE <= y <= h
