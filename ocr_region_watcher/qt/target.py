@@ -14,7 +14,8 @@ calls inject.send() for it.
 No header bar any more -- renaming already only ever happened from the
 app window's own row (this marker's name field was always read-only), so
 dropping it cost no capability. What used to be the header's name text is
-now a small chip tucked next to the crosshair -- see _position_chip().
+now a small chip tucked next to the crosshair -- see
+_resize_and_reposition_chip().
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from .style import MONO_SMALL
 
 SIZE = 22
 CHIP_MARGIN = 10  # extra transparent space past the crosshair's own box, purely so the name chip can hang slightly outside it
+CHIP_OVERLAP = 6  # how far the chip's top-left corner tucks inside the crosshair box's own bottom-right corner
 COLOR = QColor("#ff9900")
 CHIP_BG = "#0b0d10"
 
@@ -73,7 +75,7 @@ class TargetMarker(QWidget):
             self.name = name
             self.name_chip.setText(name)
             self.name_changed.emit(name)
-            self._position_chip()
+            self._resize_and_reposition_chip()
 
     def set_value_key(self, text: str) -> None:
         """Called from the app window's own key-editing field -- exactly
@@ -83,20 +85,25 @@ class TargetMarker(QWidget):
 
     # -- geometry: centered on (x, y) ---------------------------------------
     def _apply_geometry(self) -> None:
-        total = SIZE + CHIP_MARGIN
+        self._resize_and_reposition_chip()
+
+    def _resize_and_reposition_chip(self) -> None:
+        """Sizes this widget to fit the crosshair box PLUS whatever the
+        chip's current name actually needs, then tucks the chip into the
+        box's bottom-right corner. Same reasoning as RegionWatcher's
+        _resize_and_reposition_chip: a longer name (target names are
+        free-form -- "Target 1" alone is already 8 characters) must never
+        get clamped back over the crosshair itself, which is exactly what
+        the old fixed-margin math did."""
+        self.name_chip.adjustSize()
+        chip_x = max(0, SIZE - CHIP_OVERLAP)
+        chip_y = max(0, SIZE - CHIP_OVERLAP)
+        total_w = max(SIZE + CHIP_MARGIN, chip_x + self.name_chip.width())
+        total_h = max(SIZE + CHIP_MARGIN, chip_y + self.name_chip.height())
         left = self.x - SIZE // 2
         top = self.y - SIZE // 2
-        self.setGeometry(left, top, total, total)
-        self._position_chip()
-
-    def _position_chip(self) -> None:
-        """Bottom-right of the crosshair box, nudged into the margin so
-        it hangs slightly past it, same corner-overlap approach as
-        RegionWatcher's value chip."""
-        self.name_chip.adjustSize()
-        x = SIZE - self.name_chip.width() + CHIP_MARGIN // 2
-        y = SIZE - self.name_chip.height() + CHIP_MARGIN // 2
-        self.name_chip.move(max(0, x), max(0, y))
+        self.setGeometry(left, top, total_w, total_h)
+        self.name_chip.move(chip_x, chip_y)
 
     def is_alive(self) -> bool:
         """Used by EventSequencer to skip a step gracefully if its target

@@ -15,10 +15,13 @@ the frame (stacking ~46px of extra chrome above/below it) and covered
 whatever's actually on screen there. Naming/renaming already only ever
 happened from the app window's own row (this floating widget's name field
 was always read-only), so dropping the header cost no capability. What
-used to be the strip is now a single small value chip tucked into the
-frame's bottom-right corner -- see `_position_chip()`.
+used to be the header's name + the strip's value are now both shown on a
+single small chip tucked into the frame's bottom-right corner -- see
+`_refresh_chip()`/`_resize_and_reposition_chip()`.
 """
 from __future__ import annotations
+
+import html
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QRegion
@@ -31,6 +34,8 @@ CORNER_RADIUS = 4  # matches the mockup's rounded frame corners
 HANDLE = 12
 MIN_SIZE = 24
 CHIP_MARGIN = 10  # extra transparent space past the frame's own edge, purely so the corner chip can hang slightly outside the border without ever overlapping the click-through interior
+CHIP_OVERLAP = 8  # how far the chip's top-left corner tucks inside the frame's own bottom-right corner -- see _resize_and_reposition_chip
+NAME_TEXT_COLOR = "#aaaaaa"  # same gray the old header's name field used
 COLOR_LOST = QColor("#ff4444")  # shared across every region, regardless of its own identity color -- see paintEvent for why
 VALUE_TEXT_COLOR = QColor("#39ff14")
 CHIP_BG = "#0b0d10"
@@ -107,55 +112,39 @@ class RegionWatcher(QWidget):
         # anywhere on this widget itself -- the app window's own row reads
         # this text, and the chip below mirrors it visually.
         self.value_edit = QLabel("--")
+        self._lines: list[str] = ["--"]  # last recognized lines -- kept so a rename can refresh the chip without waiting on new OCR data
 
         self.value_chip = QLabel("--", self)
         self.value_chip.setFont(MONO_SMALL)
+        self.value_chip.setTextFormat(Qt.TextFormat.RichText)
         # Informational only -- without this, the chip (sitting right over
         # the frame's own se resize-handle corner) would steal that
         # handle's clicks instead of letting them reach this widget's own
         # mousePressEvent below.
         self.value_chip.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
-        self._apply_geometry()
+        self._refresh_chip()  # also handles the initial _apply_geometry() -- see _resize_and_reposition_chip
         self._style_chip()
 
     def set_name(self, name: str) -> None:
         """Rename from elsewhere (the app window's own row) -- this
-        floating widget has no name display of its own to keep in sync
-        any more, but still announces the change for anything else
-        listening (e.g. a saved template's next snapshot)."""
+        floating widget's chip mirrors the name (see _refresh_chip), even
+        though renaming itself only ever happens from that row."""
         name = name.strip()
         if name and name != self.name:
             self.name = name
             self.name_changed.emit(name)
+            self._refresh_chip()
 
     # -- geometry -----------------------------------------------------
     def _apply_geometry(self) -> None:
-        total_w = self.region_w + CHIP_MARGIN
-        total_h = self.region_h + CHIP_MARGIN
-        self.setGeometry(self.left, self.top, total_w, total_h)
-
-        # The mask is everything EXCEPT the true interior (inset from the
-        # capture rect's own edges, same inset capture_rect() uses) --
-        # border, corner handles, and the value chip stay visible+
-        # clickable; the interior is excluded from the window's hit-test
-        # region entirely, which is what makes it genuinely click-through.
-        # The chip's own margin lives entirely outside region_w/region_h,
-        # so it never overlaps -- and never shrinks -- that interior.
-        inset = max(BORDER, HANDLE // 2)
-        full = QRegion(0, 0, total_w, total_h)
-        interior = QRegion(
-            inset, inset, max(self.region_w - 2 * inset, 0), max(self.region_h - 2 * inset, 0)
-        )
-        self.setMask(full.subtracted(interior))
-        self._position_chip()
-        self.update()
+        self._resize_and_reposition_chip()
 
     def capture_rect(self) -> dict:
         """The interior rect to actually screenshot -- excludes the
         border and the corner resize-handles, so only real screen content
-        gets read. Mirrors _apply_geometry()'s mask interior exactly, so
-        what's captured is exactly what's click-through."""
+        gets read. Mirrors _resize_and_reposition_chip()'s mask interior
+        exactly, so what's captured is exactly what's click-through."""
         inset = max(BORDER, HANDLE // 2)
         return {
             "left": self.left + inset,
@@ -164,15 +153,45 @@ class RegionWatcher(QWidget):
             "height": max(self.region_h - 2 * inset, 1),
         }
 
-    def _position_chip(self) -> None:
-        """Bottom-right corner of the frame, nudged out into the margin
-        so it visually hangs slightly past the border -- same spot the
-        se resize-handle occupies, which is fine since the chip is
-        transparent to mouse events (see __init__)."""
+    def _resize_and_reposition_chip(self) -> None:
+        """Sizes this widget to fit the frame PLUS whatever the chip's
+        current text actually needs, then positions the chip tucked into
+        the frame's bottom-right corner.
+
+        The chip's top-left is pinned CHIP_OVERLAP inside that corner --
+        never shifted left/up to avoid clipping, the widget grows to fit
+        the chip instead. A recognized value (or, for TargetMarker, a
+        target's name) can be wider than the frame itself is small (their
+        real Red region is 45px wide; "$1,234.56" alone is wider than
+        that) -- the old version clamped the chip's position to keep it
+        inside a fixed-size margin, which for anything wider than that
+        margin shoved the chip left on top of the frame's own content
+        instead, and clipped whatever didn't fit. Growing the widget
+        keeps the chip fully visible and never overlapping the frame.
+        """
         self.value_chip.adjustSize()
-        x = self.region_w - self.value_chip.width() + CHIP_MARGIN // 2
-        y = self.region_h - self.value_chip.height() + CHIP_MARGIN // 2
-        self.value_chip.move(max(0, x), max(0, y))
+        chip_x = max(0, self.region_w - CHIP_OVERLAP)
+        chip_y = max(0, self.region_h - CHIP_OVERLAP)
+        total_w = max(self.region_w + CHIP_MARGIN, chip_x + self.value_chip.width())
+        total_h = max(self.region_h + CHIP_MARGIN, chip_y + self.value_chip.height())
+        self.setGeometry(self.left, self.top, total_w, total_h)
+
+        # The mask is everything EXCEPT the true interior (inset from the
+        # capture rect's own edges, same inset capture_rect() uses) --
+        # border, corner handles, and the value chip stay visible+
+        # clickable; the interior is excluded from the window's hit-test
+        # region entirely, which is what makes it genuinely click-through.
+        # The interior itself is sized off region_w/region_h alone, never
+        # off the chip, so a long value can never shrink it.
+        inset = max(BORDER, HANDLE // 2)
+        full = QRegion(0, 0, total_w, total_h)
+        interior = QRegion(
+            inset, inset, max(self.region_w - 2 * inset, 0), max(self.region_h - 2 * inset, 0)
+        )
+        self.setMask(full.subtracted(interior))
+
+        self.value_chip.move(chip_x, chip_y)
+        self.update()
 
     def _style_chip(self) -> None:
         # Locked: this region's own identity color, matching its row's
@@ -210,17 +229,26 @@ class RegionWatcher(QWidget):
             painter.drawRoundedRect(cx - HANDLE // 2, cy - HANDLE // 2, HANDLE, HANDLE, 3, 3)
 
     def set_lines(self, lines: list) -> None:
-        """Update the recognized text -- one region can still detect
-        multiple lines internally (still feeds formula.compute() as
-        separate values via _watcher_keys/_gather_readings in app.py),
-        but on screen it's always shown as one joined value now, same as
-        the app window's own row already did."""
-        lines = lines or ["--"]
-        joined = " | ".join(t or "--" for t in lines)
+        """Update the recognized text. The app window's row (and
+        formula.compute(), via _watcher_keys) still get one " | "-joined
+        string either way -- only the floating chip shows every detected
+        line on its own row, same as the old strip did."""
+        self._lines = lines or ["--"]
+        joined = " | ".join(t or "--" for t in self._lines)
         self.value_edit.setText(joined)
         self.value_changed.emit(joined)
-        self.value_chip.setText(joined)
-        self._position_chip()
+        self._refresh_chip()
+
+    def _refresh_chip(self) -> None:
+        """Renders the chip's text -- the region's name (muted, so it
+        reads as a label) above every currently recognized line (bright,
+        one per row, same green the old strip used)."""
+        value_html = "<br>".join(html.escape(t or "--") for t in self._lines)
+        self.value_chip.setText(
+            f"<span style='color:{NAME_TEXT_COLOR};'>{html.escape(self.name)}</span><br>"
+            f"<span style='color:{VALUE_TEXT_COLOR.name()};'>{value_html}</span>"
+        )
+        self._resize_and_reposition_chip()
 
     def set_locked(self, locked: bool) -> None:
         if locked != self.locked:

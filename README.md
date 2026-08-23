@@ -32,12 +32,15 @@ colored frame:
   of its own color -- dashed specifically so a region whose own color
   already happens to be reddish doesn't lose that "something's wrong"
   signal.
-- A **small value chip tucked into the frame's bottom-right corner** shows
-  the live-recognized value, updating continuously -- it hangs slightly
-  past the border rather than adding a separate bar above/below the frame,
-  so the marker stays as small as possible on top of whatever you're
-  watching. It's read-only and purely informational (clicks pass straight
-  through it to the border/handle underneath).
+- A **small chip tucked into the frame's bottom-right corner** shows the
+  region's name (muted) above its live-recognized value (bright green,
+  one line per detected line -- see "Multi-line regions" below) --
+  hanging slightly past the border rather than adding a separate bar
+  above/below the frame, so the marker stays as small as possible on top
+  of whatever you're watching. It's read-only and purely informational
+  (clicks pass straight through it to the border/handle underneath). The
+  chip grows to fit whatever it's showing -- it never shrinks back over
+  the frame itself, even for a value/name wider than the frame is.
 - **The app window gets a row for the region** the moment you add it --
   a color swatch, name (defaults to `Red` for the first region, `Blue` for
   the second, `region_3`/`region_4`/... after that -- click in and type to
@@ -70,11 +73,12 @@ skipped rather than re-read, so it naturally runs as fast as the source is
 actually changing.
 
 **Multi-line regions**: if a frame spans more than one line of text (stacked
-values, e.g. one row above another), each line is still recognized
-separately internally -- feeding multiple stacked lines into a single
-recognition pass otherwise produces garbled, hallucinated output instead of
-an error -- but on screen the corner chip and the app window's row both
-just show the joined value, one line, same as any other region.
+values, e.g. one row above another), each line is recognized separately --
+feeding multiple stacked lines into a single recognition pass otherwise
+produces garbled, hallucinated output instead of an error -- and the
+corner chip shows every line on its own row. The app window's own row
+still shows them joined into one `|`-separated line (it's a single-line
+field).
 
 **Targets (write-back)**: the read side above only ever looks at the screen.
 Targets are the opposite direction -- click **+ Add Target**, then click
@@ -200,8 +204,10 @@ crashing the app.
   under that point -- there's no simulation/dry-run mode yet. `pyautogui`'s
   failsafe stays on: slamming the mouse to any screen corner aborts an
   in-flight click+paste.
-- **Very long values/names in a corner chip**: the chip sizes itself to its
-  text, so an unusually long recognized value or target name can run past
-  the small margin reserved for it. Doesn't affect what's captured or
-  read -- the app window's own row always shows the full text -- just the
-  floating chip itself.
+- **Very long values/names in a corner chip**: the marker (region frame or
+  target crosshair) grows to fit whatever its chip needs to show, rather
+  than clipping it or shrinking the chip back over the frame/crosshair
+  itself. For an unusually long recognized value or target name, that can
+  mean a noticeably bigger marker on screen than the frame/point you
+  actually placed -- doesn't affect what's captured or read, just how much
+  room the chip visually takes up.
