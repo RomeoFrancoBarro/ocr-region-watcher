@@ -70,16 +70,24 @@ def _rows_container() -> tuple[QWidget, QVBoxLayout]:
     return container, layout
 
 
-def _collapsible_section(title: str, content: QWidget, *, expanded: bool = True) -> QWidget:
+def _collapsible_section(title: str, content: QWidget, *, expanded: bool = True) -> tuple[QWidget, QLabel]:
     """Wraps `content` (a card, usually) behind a clickable header that
-    shows/hides it. Pure session-local UI state -- not saved to templates,
-    not restored across restarts, and every section starts expanded on a
-    fresh launch (a returning user shouldn't find their own regions/
-    targets hidden without having collapsed them themselves)."""
+    shows/hides it, plus a count badge on the header's right edge (the
+    caller updates its text whenever the section's row count changes --
+    see app.py's _update_counts). Pure session-local UI state -- not
+    saved to templates, not restored across restarts, and every section
+    starts expanded on a fresh launch (a returning user shouldn't find
+    their own regions/targets hidden without having collapsed them
+    themselves)."""
     wrapper = QWidget()
     outer = QVBoxLayout(wrapper)
     outer.setContentsMargins(0, 0, 0, 0)
     outer.setSpacing(4)
+
+    header = QWidget()
+    header_layout = QHBoxLayout(header)
+    header_layout.setContentsMargins(0, 0, 0, 0)
+    header_layout.setSpacing(6)
 
     toggle_btn = QPushButton()
     toggle_btn.setCheckable(True)
@@ -102,10 +110,18 @@ def _collapsible_section(title: str, content: QWidget, *, expanded: bool = True)
         content.setVisible(checked)
 
     toggle_btn.toggled.connect(_on_toggled)
+    header_layout.addWidget(toggle_btn, 1)
 
-    outer.addWidget(toggle_btn)
+    count_badge = QLabel("0")
+    count_badge.setAlignment(Qt.AlignCenter)
+    count_badge.setStyleSheet(
+        "background: #1e1f22; color: #949ba4; font-size: 8pt; padding: 2px 7px; border-radius: 8px;"
+    )
+    header_layout.addWidget(count_badge)
+
+    outer.addWidget(header)
     outer.addWidget(content)
-    return wrapper
+    return wrapper, count_badge
 
 
 class _RecognizerLoader(QObject):
@@ -314,10 +330,12 @@ class App(QWidget):
         layout.addWidget(self.status_label)
 
         region_rows, self.region_rows_layout = _rows_container()
-        layout.addWidget(_collapsible_section("REGIONS", region_rows))
+        region_section, self._region_count_badge = _collapsible_section("REGIONS", region_rows)
+        layout.addWidget(region_section)
 
         manual_rows, self.manual_inputs_layout = _rows_container()
-        layout.addWidget(_collapsible_section("MANUAL INPUTS", manual_rows))
+        manual_section, self._manual_count_badge = _collapsible_section("MANUAL INPUTS", manual_rows)
+        layout.addWidget(manual_section)
 
         layout.addWidget(_section_label("PARSED VALUES (DEBUG)"))
         self.readings_label = QLabel("--")
@@ -326,7 +344,8 @@ class App(QWidget):
         layout.addWidget(self.readings_label)
 
         target_rows, self.target_rows_layout = _rows_container()
-        layout.addWidget(_collapsible_section("TARGETS", target_rows))
+        target_section, self._target_count_badge = _collapsible_section("TARGETS", target_rows)
+        layout.addWidget(target_section)
 
         self.target_status_label = QLabel("")
         self.target_status_label.setProperty("role", "status")
@@ -363,6 +382,9 @@ class App(QWidget):
         self.result_label.setFont(MONO)
         self.result_label.setWordWrap(True)
         layout.addWidget(self.result_label, 1)
+        pinned_label = QLabel("ALWAYS VISIBLE")
+        pinned_label.setStyleSheet("color: #949ba4; font-size: 7pt; letter-spacing: 0.5px;")
+        layout.addWidget(pinned_label)
         return bar
 
     def _build_events_tab(self, parent: QWidget) -> None:
@@ -453,11 +475,21 @@ class App(QWidget):
         entry = ManualInput(name, on_remove=self._on_manual_input_removed)
         self.manual_inputs.append(entry)
         self.manual_inputs_layout.addWidget(entry)
+        self._update_counts()
         return entry
 
     def _on_manual_input_removed(self, entry: ManualInput) -> None:
         if entry in self.manual_inputs:
             self.manual_inputs.remove(entry)
+        self._update_counts()
+
+    def _update_counts(self) -> None:
+        """Keeps each collapsible section header's count badge (see
+        _collapsible_section) in sync -- called from every place a
+        region/manual input/target is added or removed."""
+        self._region_count_badge.setText(str(len(self.watchers)))
+        self._manual_count_badge.setText(str(len(self.manual_inputs)))
+        self._target_count_badge.setText(str(len(self.targets)))
 
     # -- adding / removing regions --------------------------------------
     def _next_region_name(self) -> str:
@@ -592,6 +624,7 @@ class App(QWidget):
 
     def _update_status(self) -> None:
         self.status_label.setText(f"{len(self.watchers)} region(s). Drag a box to add one.")
+        self._update_counts()
 
     # -- adding / removing targets (write-back: click + paste) ------------
     def _next_target_name(self) -> str:
@@ -626,6 +659,7 @@ class App(QWidget):
         target.show()
         self.targets.append(target)
         self._add_target_row(target)
+        self._update_counts()
         return target
 
     def _add_target_row(self, target: TargetMarker) -> None:
@@ -709,6 +743,7 @@ class App(QWidget):
         if row is not None:
             row.deleteLater()
         self._rebuild_event_rows()
+        self._update_counts()
 
     def _on_target_changed(self, target: TargetMarker) -> None:
         pass  # just moved -- nothing to resample, no capture/OCR involved
