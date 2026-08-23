@@ -184,6 +184,7 @@ class App(QWidget):
         self.setWindowTitle("OCR Region Watcher")
         self.setFixedSize(300, 640)
         self._apply_rounded_mask()
+        self._move_to_default_position()
 
         self.grabber = ScreenGrabber()
         self.recognizer: EasyOCRRecognizer | None = None
@@ -234,6 +235,21 @@ class App(QWidget):
         path = QPainterPath()
         path.addRoundedRect(0, 0, self.width(), self.height(), 10, 10)
         self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
+    def _move_to_default_position(self) -> None:
+        """Starts docked against the right edge of the primary screen,
+        clear of the top-left area where regions/targets usually end up --
+        rather than wherever Qt's own default placement happens to land,
+        which (now that this window is always-on-top) could open directly
+        on top of whatever you're trying to watch, or of a region/target
+        you're about to place. Only a starting position -- drag the header
+        bar to move it anywhere; that position isn't remembered across
+        restarts."""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        geo = screen.availableGeometry()
+        self.move(geo.right() - self.width(), geo.top() + 40)
 
     # -- layout -------------------------------------------------------
     def _build_ui(self) -> None:
