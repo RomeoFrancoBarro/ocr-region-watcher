@@ -26,8 +26,9 @@ from PySide6.QtWidgets import QLabel, QWidget
 
 from .style import MONO_SMALL
 
-BORDER = 6
-HANDLE = 16
+BORDER = 2  # thin, matching the minimal-overlay mockup -- the old header+strip design used a thick 6px border, but that's not what a click-through interior needs; only HANDLE below governs how wide the actual draggable/resizable margin is
+CORNER_RADIUS = 4  # matches the mockup's rounded frame corners
+HANDLE = 12
 MIN_SIZE = 24
 CHIP_MARGIN = 10  # extra transparent space past the frame's own edge, purely so the corner chip can hang slightly outside the border without ever overlapping the click-through interior
 COLOR_LOST = QColor("#ff4444")  # shared across every region, regardless of its own identity color -- see paintEvent for why
@@ -187,6 +188,7 @@ class RegionWatcher(QWidget):
     # -- drawing --------------------------------------------------------
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         w, h = self.region_w, self.region_h
 
         # Same reasoning as _style_chip: locked draws in this region's own
@@ -200,12 +202,12 @@ class RegionWatcher(QWidget):
             pen.setStyle(Qt.DashLine)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
-        painter.drawRect(BORDER // 2, BORDER // 2, w - BORDER, h - BORDER)
+        painter.drawRoundedRect(BORDER // 2, BORDER // 2, w - BORDER, h - BORDER, CORNER_RADIUS, CORNER_RADIUS)
 
         painter.setPen(Qt.NoPen)
         painter.setBrush(self.color if self.locked else COLOR_LOST)
         for cx, cy in [(0, 0), (w, 0), (0, h), (w, h)]:
-            painter.drawRect(cx - HANDLE // 2, cy - HANDLE // 2, HANDLE, HANDLE)
+            painter.drawRoundedRect(cx - HANDLE // 2, cy - HANDLE // 2, HANDLE, HANDLE, 3, 3)
 
     def set_lines(self, lines: list) -> None:
         """Update the recognized text -- one region can still detect
