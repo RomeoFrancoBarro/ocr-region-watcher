@@ -8,7 +8,7 @@ import threading
 import time
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPainterPath, QRegion
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -47,15 +47,27 @@ def _section_label(text: str) -> QLabel:
     return label
 
 
-def _card(*, layout_cls=QVBoxLayout) -> tuple[QFrame, QVBoxLayout | QHBoxLayout]:
-    """A subtly-bordered rounded frame grouping one section -- pure UX/
-    visual grouping, no functional role. See style.py's QFrame[role=card]."""
+def _row_card(*, layout_cls=QVBoxLayout) -> tuple[QFrame, QVBoxLayout | QHBoxLayout]:
+    """A subtly-bordered rounded frame for ONE row -- region/manual-input/
+    target rows are each their own card, not one shared frame wrapping a
+    whole section's worth of rows (see _rows_container). See style.py's
+    QFrame[role=card]."""
     frame = QFrame()
     frame.setProperty("role", "card")
     layout = layout_cls(frame)
     layout.setContentsMargins(10, 8, 10, 8)
     layout.setSpacing(4)
     return frame, layout
+
+
+def _rows_container() -> tuple[QWidget, QVBoxLayout]:
+    """A plain vertical list for a collapsible section's rows -- no border
+    of its own, just spacing between the individual row cards inside it."""
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(6)
+    return container, layout
 
 
 def _collapsible_section(title: str, content: QWidget, *, expanded: bool = True) -> QWidget:
@@ -120,15 +132,29 @@ class _TitleBar(QFrame):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 0, 6, 0)
+        layout.setSpacing(2)
         title = QLabel("OCR Region Watcher")
         title.setStyleSheet("color: #949ba4; font-weight: 600; font-size: 9pt;")
         layout.addWidget(title)
         layout.addStretch(1)
 
+        chrome_btn_style = (
+            "QPushButton { background: transparent; border: none; color: #949ba4;"
+            " font-weight: 700; padding: 2px 0; }"
+            "QPushButton:hover { background-color: #26282c; border-radius: 3px; }"
+        )
+
+        minimize_btn = QPushButton("-")
+        minimize_btn.setFixedWidth(24)
+        minimize_btn.setToolTip("Minimize")
+        minimize_btn.setStyleSheet(chrome_btn_style)
+        minimize_btn.clicked.connect(app_window.showMinimized)
+        layout.addWidget(minimize_btn)
+
         close_btn = QPushButton("x")
         close_btn.setObjectName("flatRemove")
         close_btn.setFixedWidth(24)
-        close_btn.setToolTip("Close (quits the app -- there's no minimize; drag this bar to move the window instead)")
+        close_btn.setToolTip("Close (quits the app)")
         close_btn.clicked.connect(app_window.close)
         layout.addWidget(close_btn)
 
@@ -157,6 +183,7 @@ class App(QWidget):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setWindowTitle("OCR Region Watcher")
         self.setFixedSize(300, 640)
+        self._apply_rounded_mask()
 
         self.grabber = ScreenGrabber()
         self.recognizer: EasyOCRRecognizer | None = None
@@ -199,6 +226,14 @@ class App(QWidget):
         self._cycle_timer = QTimer(self)
         self._cycle_timer.timeout.connect(self._cycle)
         self._cycle_timer.start(CYCLE_MS)
+
+    def _apply_rounded_mask(self) -> None:
+        """Rounds the window's own corners -- there's no OS chrome left to
+        do that for us (see __init__), so it's a manual mask instead. Only
+        needs doing once since the window is a fixed size."""
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, self.width(), self.height(), 10, 10)
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
     # -- layout -------------------------------------------------------
     def _build_ui(self) -> None:
@@ -262,11 +297,11 @@ class App(QWidget):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-        region_card, self.region_rows_layout = _card()
-        layout.addWidget(_collapsible_section("REGIONS (READ FROM SCREEN)", region_card))
+        region_rows, self.region_rows_layout = _rows_container()
+        layout.addWidget(_collapsible_section("REGIONS", region_rows))
 
-        manual_card, self.manual_inputs_layout = _card()
-        layout.addWidget(_collapsible_section("MANUAL INPUTS (TYPED, NOT READ FROM SCREEN)", manual_card))
+        manual_rows, self.manual_inputs_layout = _rows_container()
+        layout.addWidget(_collapsible_section("MANUAL INPUTS", manual_rows))
 
         layout.addWidget(_section_label("PARSED VALUES (DEBUG)"))
         self.readings_label = QLabel("--")
@@ -274,9 +309,8 @@ class App(QWidget):
         self.readings_label.setWordWrap(True)
         layout.addWidget(self.readings_label)
 
-        target_card, self.target_rows_layout = _card()
-        self.target_rows_layout.setSpacing(8)  # each target is its own multi-row card -- 4px (the section default) read as touching
-        layout.addWidget(_collapsible_section("TARGETS (SEND CLICKS + PASTES)", target_card))
+        target_rows, self.target_rows_layout = _rows_container()
+        layout.addWidget(_collapsible_section("TARGETS", target_rows))
 
         self.target_status_label = QLabel("")
         self.target_status_label.setProperty("role", "status")
@@ -464,39 +498,62 @@ class App(QWidget):
         return watcher
 
     def _add_region_row(self, watcher: RegionWatcher) -> None:
-        row = QWidget()
-        row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(6)
+        row, col = _row_card()
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(6)
 
         # Matches the floating frame's own border color -- lets you match
         # a row to its on-screen marker at a glance instead of only by name.
         swatch = QLabel()
         swatch.setFixedSize(10, 10)
         swatch.setStyleSheet(f"background-color: {watcher.color.name()}; border-radius: 3px;")
-        row_layout.addWidget(swatch)
+        top_row.addWidget(swatch)
 
+        # Borderless/transparent until focused -- reads as plain bold text
+        # at rest, but is still a real editable field (click in, type,
+        # commits on losing focus) exactly as before.
         name_edit = QLineEdit(watcher.name)
         name_edit.setFixedWidth(64)
         name_edit.setFont(MONO)
+        name_edit.setStyleSheet(
+            "QLineEdit { border: none; background: transparent; font-weight: 600; padding: 0; }"
+            "QLineEdit:focus { border: 1px solid #5865f2; border-radius: 3px; background: #1e1f22; }"
+        )
         name_edit.editingFinished.connect(lambda: watcher.set_name(name_edit.text()))
         watcher.name_changed.connect(name_edit.setText)
-        row_layout.addWidget(name_edit)
+        top_row.addWidget(name_edit)
 
         # The live value here -- not shown a second time on the floating
-        # overlay's own header (which would just duplicate its strip).
+        # overlay's own corner chip (which already shows the same text).
         value_label = QLineEdit(watcher.value_edit.text())
         value_label.setReadOnly(True)
         value_label.setFont(MONO)
         value_label.setAlignment(Qt.AlignRight)
+        value_label.setStyleSheet("QLineEdit { border: none; background: transparent; padding: 0; }")
         watcher.value_changed.connect(value_label.setText)
-        row_layout.addWidget(value_label, 1)
+        top_row.addWidget(value_label, 1)
 
         remove_btn = QPushButton("x")
         remove_btn.setObjectName("flatRemove")
-        remove_btn.setFixedWidth(22)
+        remove_btn.setFixedWidth(20)
         remove_btn.clicked.connect(watcher._close)
-        row_layout.addWidget(remove_btn)
+        top_row.addWidget(remove_btn)
+        col.addLayout(top_row)
+
+        status_label = QLabel()
+        status_label.setStyleSheet("color: #949ba4; font-size: 8pt;")
+
+        def _update_status(locked: bool = True) -> None:
+            bits = ["region"]
+            if watcher.formula_key:
+                bits.append(watcher.formula_key)
+            bits.append("locked" if locked else "lost signal")
+            status_label.setText(" · ".join(bits))
+
+        _update_status(watcher.locked)
+        watcher.locked_changed.connect(_update_status)
+        col.addWidget(status_label)
 
         watcher.row_widget = row
         self.region_rows_layout.addWidget(row)
@@ -556,18 +613,28 @@ class App(QWidget):
         return target
 
     def _add_target_row(self, target: TargetMarker) -> None:
-        container = QFrame()
-        container.setProperty("role", "card")
-        col = QVBoxLayout(container)
-        col.setContentsMargins(8, 6, 8, 6)
-        col.setSpacing(6)
+        container, col = _row_card()
 
         top_row = QHBoxLayout()
         top_row.setSpacing(6)
+
+        # Same circular-chip language as the crosshair's own name chip on
+        # screen -- orange for every target (unlike regions, targets don't
+        # get individual identity colors; there's nothing on-screen shaped
+        # like a frame to color-match to, just the crosshair itself).
+        chip = QWidget()
+        chip.setFixedSize(10, 10)
+        chip.setStyleSheet("background-color: #ff9900; border-radius: 5px;")
+        top_row.addWidget(chip)
+
         name_edit = QLineEdit(target.name)
-        name_edit.setFixedWidth(80)
+        name_edit.setFixedWidth(72)
         name_edit.setFont(MONO_SMALL)
         name_edit.setToolTip("Just a label -- doesn't affect what gets pasted")
+        name_edit.setStyleSheet(
+            "QLineEdit { border: none; background: transparent; font-weight: 600; padding: 0; }"
+            "QLineEdit:focus { border: 1px solid #5865f2; border-radius: 3px; background: #1e1f22; }"
+        )
         name_edit.editingFinished.connect(lambda: target.set_name(name_edit.text()))
         target.name_changed.connect(name_edit.setText)
         top_row.addWidget(name_edit)
@@ -576,6 +643,10 @@ class App(QWidget):
         key_edit.setFont(MONO_SMALL)
         key_edit.setPlaceholderText("paste key, e.g. M")
         key_edit.setToolTip("Which single formula.compute() result key Send pastes here")
+        key_edit.setStyleSheet(
+            "QLineEdit { border: none; background: #1e1f22; border-radius: 3px; padding: 2px 6px; }"
+            "QLineEdit:focus { border: 1px solid #5865f2; }"
+        )
         key_edit.editingFinished.connect(lambda: target.set_value_key(key_edit.text()))
         top_row.addWidget(key_edit, 1)
         col.addLayout(top_row)

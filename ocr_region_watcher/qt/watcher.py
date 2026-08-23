@@ -63,6 +63,7 @@ def next_region_color(index: int) -> QColor:
 class RegionWatcher(QWidget):
     name_changed = Signal(str)  # emitted when the name changes -- from the app window's row, the only place renaming happens now
     value_changed = Signal(str)  # emitted when the displayed (joined) value text changes
+    locked_changed = Signal(bool)  # emitted when the sampled background stops/resumes matching -- lets the app window's row mirror it
 
     def __init__(
         self,
@@ -224,6 +225,7 @@ class RegionWatcher(QWidget):
             self.locked = locked
             self._style_chip()
             self.update()
+            self.locked_changed.emit(locked)
 
     # -- mouse: move / resize / close ------------------------------------
     def _corner_at(self, x: int, y: int) -> str | None:
