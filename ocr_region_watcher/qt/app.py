@@ -8,6 +8,7 @@ import threading
 import time
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -35,7 +36,7 @@ from .manual_input import ManualInput
 from .overlay import snip_point, snip_region
 from .style import MONO, MONO_SMALL
 from .target import TargetMarker
-from .watcher import RegionWatcher
+from .watcher import RegionWatcher, next_region_color
 
 CYCLE_MS = 30  # same floor as the Tkinter version's cycle
 
@@ -57,6 +58,44 @@ def _card(*, layout_cls=QVBoxLayout) -> tuple[QFrame, QVBoxLayout | QHBoxLayout]
     return frame, layout
 
 
+def _collapsible_section(title: str, content: QWidget, *, expanded: bool = True) -> QWidget:
+    """Wraps `content` (a card, usually) behind a clickable header that
+    shows/hides it. Pure session-local UI state -- not saved to templates,
+    not restored across restarts, and every section starts expanded on a
+    fresh launch (a returning user shouldn't find their own regions/
+    targets hidden without having collapsed them themselves)."""
+    wrapper = QWidget()
+    outer = QVBoxLayout(wrapper)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(4)
+
+    toggle_btn = QPushButton()
+    toggle_btn.setCheckable(True)
+    toggle_btn.setChecked(expanded)
+    toggle_btn.setCursor(Qt.PointingHandCursor)
+    toggle_btn.setStyleSheet(
+        "QPushButton { text-align: left; background: transparent; border: none;"
+        " color: #949ba4; font-size: 8pt; font-weight: 600; padding: 4px 2px; border-radius: 4px; }"
+        "QPushButton:hover { background-color: #26282c; }"
+    )
+
+    def _set_text(checked: bool) -> None:
+        toggle_btn.setText(f"{'▾' if checked else '▸'}  {title}")
+
+    _set_text(expanded)
+    content.setVisible(expanded)
+
+    def _on_toggled(checked: bool) -> None:
+        _set_text(checked)
+        content.setVisible(checked)
+
+    toggle_btn.toggled.connect(_on_toggled)
+
+    outer.addWidget(toggle_btn)
+    outer.addWidget(content)
+    return wrapper
+
+
 class _RecognizerLoader(QObject):
     ready = Signal(object)
 
@@ -65,11 +104,59 @@ class _RecognizerLoader(QObject):
         self.ready.emit(recognizer)
 
 
+class _TitleBar(QFrame):
+    """Custom header for the main window -- it's frameless (see App.__init__,
+    docked-panel style rather than a normal resizable window), so this
+    replaces the OS title bar it no longer has: something to grab to move
+    the window, and a close button. Drag math mirrors the exact pattern
+    RegionWatcher/TargetMarker already use for their own dragging."""
+
+    def __init__(self, app_window: QWidget) -> None:
+        super().__init__()
+        self._app_window = app_window
+        self._drag_origin: tuple | None = None
+        self.setFixedHeight(30)
+        self.setStyleSheet("background-color: #17181a;")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 0, 6, 0)
+        title = QLabel("OCR Region Watcher")
+        title.setStyleSheet("color: #949ba4; font-weight: 600; font-size: 9pt;")
+        layout.addWidget(title)
+        layout.addStretch(1)
+
+        close_btn = QPushButton("x")
+        close_btn.setObjectName("flatRemove")
+        close_btn.setFixedWidth(24)
+        close_btn.setToolTip("Close (quits the app -- there's no minimize; drag this bar to move the window instead)")
+        close_btn.clicked.connect(app_window.close)
+        layout.addWidget(close_btn)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._drag_origin = (event.globalPosition().toPoint(), self._app_window.pos())
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_origin:
+            origin, start_pos = self._drag_origin
+            delta = event.globalPosition().toPoint() - origin
+            self._app_window.move(start_pos + delta)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_origin = None
+
+
 class App(QWidget):
     def __init__(self) -> None:
-        super().__init__()
+        # Frameless + always-on-top -- a docked utility panel, not a normal
+        # resizable window: no OS title bar (see _TitleBar), no OS resize
+        # edges either, so this is a fixed size for now rather than a size
+        # nothing could actually drag-resize. Still the default Qt.Window
+        # type underneath (not Qt.Tool), so it keeps a normal taskbar
+        # entry/Alt-Tab presence -- only the chrome changed.
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setWindowTitle("OCR Region Watcher")
-        self.resize(340, 560)
+        self.setFixedSize(300, 640)
 
         self.grabber = ScreenGrabber()
         self.recognizer: EasyOCRRecognizer | None = None
@@ -117,6 +204,9 @@ class App(QWidget):
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(_TitleBar(self))
+
         tabs = QTabWidget()
         outer.addWidget(tabs)
 
@@ -125,7 +215,18 @@ class App(QWidget):
         main_content = QWidget()
         main_scroll.setWidget(main_content)
         self._build_main_tab(main_content)
-        tabs.addTab(main_scroll, "Main")
+
+        # The Result row lives outside the scroll area, in its own tab
+        # wrapper -- pinned to the bottom of the Main tab and always
+        # visible, regardless of how many sections above are expanded or
+        # how far the scroll area is scrolled.
+        main_tab = QWidget()
+        main_tab_layout = QVBoxLayout(main_tab)
+        main_tab_layout.setContentsMargins(0, 0, 0, 0)
+        main_tab_layout.setSpacing(0)
+        main_tab_layout.addWidget(main_scroll, 1)
+        main_tab_layout.addWidget(self._build_result_bar())
+        tabs.addTab(main_tab, "Main")
 
         events_content = QWidget()
         self._build_events_tab(events_content)
@@ -162,12 +263,10 @@ class App(QWidget):
         layout.addWidget(self.status_label)
 
         region_card, self.region_rows_layout = _card()
-        layout.addWidget(_section_label("REGIONS (READ FROM SCREEN)"))
-        layout.addWidget(region_card)
+        layout.addWidget(_collapsible_section("REGIONS (READ FROM SCREEN)", region_card))
 
         manual_card, self.manual_inputs_layout = _card()
-        layout.addWidget(_section_label("MANUAL INPUTS (TYPED, NOT READ FROM SCREEN)"))
-        layout.addWidget(manual_card)
+        layout.addWidget(_collapsible_section("MANUAL INPUTS (TYPED, NOT READ FROM SCREEN)", manual_card))
 
         layout.addWidget(_section_label("PARSED VALUES (DEBUG)"))
         self.readings_label = QLabel("--")
@@ -177,8 +276,7 @@ class App(QWidget):
 
         target_card, self.target_rows_layout = _card()
         self.target_rows_layout.setSpacing(8)  # each target is its own multi-row card -- 4px (the section default) read as touching
-        layout.addWidget(_section_label("TARGETS (SEND CLICKS + PASTES)"))
-        layout.addWidget(target_card)
+        layout.addWidget(_collapsible_section("TARGETS (SEND CLICKS + PASTES)", target_card))
 
         self.target_status_label = QLabel("")
         self.target_status_label.setProperty("role", "status")
@@ -200,15 +298,22 @@ class App(QWidget):
 
         layout.addStretch(1)
 
-        result_row = QHBoxLayout()
+    def _build_result_bar(self) -> QWidget:
+        """A footer pinned outside the Main tab's scroll area -- see
+        _build_ui -- so it's always visible no matter how much is
+        expanded/scrolled above it."""
+        bar = QFrame()
+        bar.setStyleSheet("QFrame { background-color: #202225; border-top: 1px solid #3f4147; }")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(14, 10, 14, 10)
         result_title = QLabel("Result:")
         result_title.setStyleSheet("font-weight: 700;")
-        result_row.addWidget(result_title)
+        layout.addWidget(result_title)
         self.result_label = QLabel("--")
         self.result_label.setFont(MONO)
         self.result_label.setWordWrap(True)
-        result_row.addWidget(self.result_label, 1)
-        layout.addLayout(result_row)
+        layout.addWidget(self.result_label, 1)
+        return bar
 
     def _build_events_tab(self, parent: QWidget) -> None:
         layout = QVBoxLayout(parent)
@@ -330,24 +435,25 @@ class App(QWidget):
         region_index = self._next_id
         left, top, width, height = rect
         name = self._next_region_name()
-        self._create_region(left, top, width, height, name, self._PAIRED_FORMULA_KEYS.get(region_index))
+        color = next_region_color(region_index)
+        self._create_region(left, top, width, height, name, self._PAIRED_FORMULA_KEYS.get(region_index), color)
         paired_name = self._PAIRED_MANUAL_INPUTS.get(region_index)
         if paired_name is not None:
             self._add_manual_input(paired_name)
         self._update_status()
 
     def _create_region(
-        self, left: int, top: int, width: int, height: int, name: str, formula_key: str | None,
+        self, left: int, top: int, width: int, height: int, name: str, formula_key: str | None, color,
     ) -> RegionWatcher:
         """Build, show, and register a region watcher from explicit
-        parameters -- shared by live '+ Add Region' drags (formula_key
-        inferred from creation order via _PAIRED_FORMULA_KEYS, above in
-        _on_add_region) and template restores (formula_key taken directly
-        from the saved snapshot, see _restore_snapshot)."""
+        parameters -- shared by live '+ Add Region' drags (formula_key and
+        color both inferred from creation order, above in _on_add_region)
+        and template restores (both taken directly from the saved
+        snapshot, see _restore_snapshot)."""
         watcher = RegionWatcher(
             left, top, width, height, name,
             on_close=self._on_watcher_closed, on_change=self._on_watcher_changed,
-            formula_key=formula_key,
+            formula_key=formula_key, color=color,
         )
         watcher.show()
         self._resample(watcher)
@@ -361,6 +467,14 @@ class App(QWidget):
         row = QWidget()
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+
+        # Matches the floating frame's own border color -- lets you match
+        # a row to its on-screen marker at a glance instead of only by name.
+        swatch = QLabel()
+        swatch.setFixedSize(10, 10)
+        swatch.setStyleSheet(f"background-color: {watcher.color.name()}; border-radius: 3px;")
+        row_layout.addWidget(swatch)
 
         name_edit = QLineEdit(watcher.name)
         name_edit.setFixedWidth(64)
@@ -517,7 +631,7 @@ class App(QWidget):
         return {
             "regions": [
                 {
-                    "name": w.name, "formula_key": w.formula_key,
+                    "name": w.name, "formula_key": w.formula_key, "color": w.color.name(),
                     "left": w.left, "top": w.top, "width": w.region_w, "height": w.region_h,
                 }
                 for w in self.watchers
@@ -559,8 +673,14 @@ class App(QWidget):
         self._rebuild_event_rows()
 
     def _restore_snapshot(self, data: dict) -> None:
-        for r in data.get("regions", []):
-            self._create_region(r["left"], r["top"], r["width"], r["height"], r["name"], r.get("formula_key"))
+        # index (1-based, restore order) is the fallback for a template
+        # saved before regions had colors at all -- e.g. this machine's
+        # own existing data/templates.json -- so an old file still loads
+        # with a sensible color instead of needing a "color" key it never
+        # had.
+        for index, r in enumerate(data.get("regions", []), start=1):
+            color = QColor(r["color"]) if r.get("color") else next_region_color(index)
+            self._create_region(r["left"], r["top"], r["width"], r["height"], r["name"], r.get("formula_key"), color)
         # Regions restored above never call _next_region_name(), so
         # _next_id wouldn't otherwise advance -- without this, a
         # subsequently live-dragged region would reuse "Red"/"Blue" and
@@ -646,6 +766,20 @@ class App(QWidget):
         self._teardown_live_state()
         self._restore_snapshot(data)
         self.active_template = name
+        # A template saved before some now-standard field existed (e.g. a
+        # region's color, added after this file may have been written)
+        # restores with a synthesized default for that field -- persist it
+        # immediately so the stored snapshot matches what was just
+        # restored. Without this, _confirm_discard_if_dirty's very next
+        # comparison (freshly captured vs. the still-old-shaped stored
+        # dict) would flag "unsaved changes" for a load where nothing was
+        # actually edited.
+        fresh = self._capture_snapshot()
+        if fresh != data:
+            try:
+                self.template_store.save(name, fresh)
+            except OSError:
+                pass  # not fatal -- a real edit will still prompt to save normally
         try:
             self.template_store.set_last_active(name)
         except OSError as exc:

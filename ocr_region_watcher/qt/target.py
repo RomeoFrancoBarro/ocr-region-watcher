@@ -10,20 +10,24 @@ display-name from lookup-key there too.
 No capture rect, no OCR, no resize handles (a point, not an area to
 read). Never fires on its own; only an explicit Send action in app.py
 calls inject.send() for it.
+
+No header bar any more -- renaming already only ever happened from the
+app window's own row (this marker's name field was always read-only), so
+dropping it cost no capability. What used to be the header's name text is
+now a small chip tucked next to the crosshair -- see _position_chip().
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
-from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QPushButton, QWidget
+from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtWidgets import QLabel, QWidget
 
-from .style import MONO
+from .style import MONO_SMALL
 
 SIZE = 22
-HEADER_H = 22
+CHIP_MARGIN = 10  # extra transparent space past the crosshair's own box, purely so the name chip can hang slightly outside it
 COLOR = QColor("#ff9900")
-MIN_HEADER_W = SIZE  # never narrower than the crosshair itself
-NAME_PADDING = 36  # close button (18) + matching left spacer (18) -- margins/spacing are zero, see header setup
+CHIP_BG = "#0b0d10"
 
 
 class TargetMarker(QWidget):
@@ -51,36 +55,15 @@ class TargetMarker(QWidget):
         self._on_change = on_change
         self._drag_origin = None
 
-        self.header = QWidget(self)
-        self.header.setStyleSheet("background-color: black;")
-        layout = QHBoxLayout(self.header)
-        layout.setContentsMargins(0, 0, 0, 0)  # zero -- the gray name box should fill the black bar exactly, not float inset within it
-        layout.setSpacing(0)
-
-        # Balances the close button's width on the opposite side -- without
-        # this, the gray box (even with its own text centered inside it)
-        # ends up shifted left within the black bar, since only the close
-        # button claims space on the right.
-        left_spacer = QWidget()
-        left_spacer.setFixedWidth(18)
-        left_spacer.setStyleSheet("background-color: black;")  # explicit -- a bare QWidget isn't guaranteed to show the parent's background through it
-        layout.addWidget(left_spacer)
-
-        self.name_edit = QLineEdit(name)
-        self.name_edit.setFont(MONO)
-        self.name_edit.setAlignment(Qt.AlignCenter)
-        self.name_edit.setFixedHeight(HEADER_H)  # QLineEdit's own vertical size policy is Fixed -- zero layout margins alone don't stretch it to fill the header
-        self.name_edit.setReadOnly(True)  # rename from the app window's own row instead -- set_name() still updates this
-        self.name_edit.setStyleSheet("background-color: #222222; color: #aaaaaa; border: none; padding: 0px 2px;")
-        self.name_edit.setToolTip("Read-only here -- rename this target from its row in the app window")
-        layout.addWidget(self.name_edit, 1)
-
-        close_btn = QPushButton("x")
-        close_btn.setFixedWidth(18)
-        close_btn.setToolTip("Remove this target")
-        close_btn.setStyleSheet("color: #ff5555; background: black; border: none; font-weight: bold;")
-        close_btn.clicked.connect(self._close)
-        layout.addWidget(close_btn)
+        self.name_chip = QLabel(name, self)
+        self.name_chip.setFont(MONO_SMALL)
+        # Informational only -- without this the chip would steal clicks
+        # that should instead drag the marker (see mousePressEvent).
+        self.name_chip.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.name_chip.setStyleSheet(
+            f"background-color: {CHIP_BG}; color: #aaaaaa;"
+            f" border: 1px solid {COLOR.name()}; border-radius: 4px; padding: 1px 5px;"
+        )
 
         self._apply_geometry()
 
@@ -88,9 +71,9 @@ class TargetMarker(QWidget):
         name = name.strip()
         if name and name != self.name:
             self.name = name
-            self.name_edit.setText(name)
+            self.name_chip.setText(name)
             self.name_changed.emit(name)
-            self._apply_geometry()  # the header needs to widen/narrow to fit the new name
+            self._position_chip()
 
     def set_value_key(self, text: str) -> None:
         """Called from the app window's own key-editing field -- exactly
@@ -98,20 +81,22 @@ class TargetMarker(QWidget):
         text = text.strip()
         self.value_key = text or None
 
-    # -- geometry: centered on (x, y), header sits above it ----------------
+    # -- geometry: centered on (x, y) ---------------------------------------
     def _apply_geometry(self) -> None:
-        # The header (and so the whole marker) widens to fit however long
-        # the current name is -- the fixed SIZE crosshair used to force
-        # every name into a 22px box regardless of length. The crosshair
-        # itself stays SIZE wide, centered under the header either way, so
-        # it's still exactly on (x, y) no matter how wide the name makes
-        # the header.
-        name_w = QFontMetrics(MONO).horizontalAdvance(self.name)
-        width = max(MIN_HEADER_W, name_w + NAME_PADDING)
-        left = self.x - width // 2
+        total = SIZE + CHIP_MARGIN
+        left = self.x - SIZE // 2
         top = self.y - SIZE // 2
-        self.setGeometry(left, top - HEADER_H, width, SIZE + HEADER_H)
-        self.header.setGeometry(0, 0, width, HEADER_H)
+        self.setGeometry(left, top, total, total)
+        self._position_chip()
+
+    def _position_chip(self) -> None:
+        """Bottom-right of the crosshair box, nudged into the margin so
+        it hangs slightly past it, same corner-overlap approach as
+        RegionWatcher's value chip."""
+        self.name_chip.adjustSize()
+        x = SIZE - self.name_chip.width() + CHIP_MARGIN // 2
+        y = SIZE - self.name_chip.height() + CHIP_MARGIN // 2
+        self.name_chip.move(max(0, x), max(0, y))
 
     def is_alive(self) -> bool:
         """Used by EventSequencer to skip a step gracefully if its target
@@ -128,12 +113,13 @@ class TargetMarker(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setPen(QPen(COLOR, 2))
-        cx = (self.width() - SIZE) // 2  # crosshair centered under a header that may be wider than SIZE
-        painter.drawEllipse(cx + 2, HEADER_H + 2, SIZE - 4, SIZE - 4)
-        painter.drawLine(cx + SIZE // 2, HEADER_H, cx + SIZE // 2, HEADER_H + SIZE)
-        painter.drawLine(cx, HEADER_H + SIZE // 2, cx + SIZE, HEADER_H + SIZE // 2)
+        painter.drawEllipse(2, 2, SIZE - 4, SIZE - 4)
+        painter.drawLine(SIZE // 2, 0, SIZE // 2, SIZE)
+        painter.drawLine(0, SIZE // 2, SIZE, SIZE // 2)
 
     # -- mouse: drag to reposition, no resize (it's a point) ---------------
+    # The name chip is transparent to mouse events, so every click
+    # anywhere on this widget reaches these handlers directly.
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             self._drag_origin = (event.globalPosition().toPoint(), self.x, self.y)

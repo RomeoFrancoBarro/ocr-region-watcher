@@ -3,30 +3,56 @@
 Point it at any value on screen (any app/site -- generic, not wired to a
 specific page) and it reads it live, right where it is.
 
+## The app window
+
+It's a small, frameless, always-on-top **docked panel**, not a normal
+resizable window -- there's no OS title bar; drag its own header bar (top of
+the window) to move it, and its **x** closes the app (there's no minimize).
+It's a fixed size for now, not resizable. It still shows up normally in the
+taskbar/Alt-Tab.
+
 ## How it works
 
 Click **+ Add Region**, drag a box over a value like a snipping tool, let
 go. That's it -- no dialogs. The box stays exactly there as a small
-cyan-bordered frame:
+colored frame:
 
 - The **inside of the frame is fully transparent and click-through** -- the
   real page/app underneath is still fully visible and interactive. It's not
   a screenshot sitting on top; the frame is just a marker.
-- **Drag the border** (or the text strip below it) to move the frame.
-  **Drag a corner handle** to resize it.
-- A **header above the frame** holds the region's name (defaults to
-  `Red` for the first region, `Blue` for the second, `region_3`/
-  `region_4`/... after that -- click in and type to rename it; this is what
-  a formula will key off of later) plus a read-only copy of the current
-  value (selectable/copyable, unlike the strip's plain canvas text). Click
-  the **x** there to remove the region.
-- The **strip below the frame** shows the live-recognized value, updating
-  continuously (same value as the header's copy).
-- The **app window also gets a row for the region** the moment you add it --
-  same name + read-only value, kept in sync with the floating frame's
-  header automatically (they share the same underlying fields, so renaming
-  or removing from either place updates both). Handy for seeing every
-  region at a glance without hunting across the screen for each one.
+- **Drag the border** to move the frame. **Drag a corner handle** to
+  resize it.
+- **Each region gets its own identity color**, cycled in creation order
+  (red, blue, green, magenta, cyan, yellow, then repeating) -- the frame's
+  border, its value chip's border, and a small swatch on that region's row
+  in the app window all match, so you can tell which floating frame belongs
+  to which row at a glance instead of only by name. If the sampled
+  background drifts too far (window moved, page scrolled, something now
+  covering it), the border switches to a shared red, *dashed* line instead
+  of its own color -- dashed specifically so a region whose own color
+  already happens to be reddish doesn't lose that "something's wrong"
+  signal.
+- A **small value chip tucked into the frame's bottom-right corner** shows
+  the live-recognized value, updating continuously -- it hangs slightly
+  past the border rather than adding a separate bar above/below the frame,
+  so the marker stays as small as possible on top of whatever you're
+  watching. It's read-only and purely informational (clicks pass straight
+  through it to the border/handle underneath).
+- **The app window gets a row for the region** the moment you add it --
+  a color swatch, name (defaults to `Red` for the first region, `Blue` for
+  the second, `region_3`/`region_4`/... after that -- click in and type to
+  rename it; this is what a formula will key off of later), a read-only
+  copy of the current value, and an **x** to remove it. Renaming and
+  removing both only happen from this row now, not from the floating frame
+  itself. The row's value stays in sync with the floating chip
+  automatically (they share the same underlying field).
+
+In the app window, **Regions**, **Manual Inputs**, and **Targets** are each
+a collapsible section -- click a section's header (the `▾`/`▸` arrow) to
+show or hide its rows. Collapsing doesn't stop anything running underneath;
+it's just for keeping the window short when you don't need to look at a
+section. This state isn't saved -- every section starts expanded again on
+the next launch.
 
 **Manual inputs**: click **+ Manual Input** in the app window for a value
 that isn't read from the screen at all -- you type it in directly (e.g. a
@@ -44,18 +70,20 @@ skipped rather than re-read, so it naturally runs as fast as the source is
 actually changing.
 
 **Multi-line regions**: if a frame spans more than one line of text (stacked
-values, e.g. one row above another), the strip grows to show one row per
-detected line, and each line is recognized separately -- feeding multiple
-stacked lines into a single recognition pass otherwise produces garbled,
-hallucinated output instead of an error.
+values, e.g. one row above another), each line is still recognized
+separately internally -- feeding multiple stacked lines into a single
+recognition pass otherwise produces garbled, hallucinated output instead of
+an error -- but on screen the corner chip and the app window's row both
+just show the joined value, one line, same as any other region.
 
 **Targets (write-back)**: the read side above only ever looks at the screen.
 Targets are the opposite direction -- click **+ Add Target**, then click
 once (no drag, it's a point) where you want a value *sent to*, e.g. a stake
 field in some other app. It shows up as a small orange crosshair marker
-(draggable to reposition, renamable, removable, same pattern as a region)
-plus a row in the app window with a **paste** checkbox and its own **Send**
-button. **Nothing sends automatically** -- a target only ever acts because
+(draggable to reposition) with a small name chip next to it, plus a row in
+the app window with a **paste** checkbox and its own **Send** button.
+Renaming and removing a target both happen from that row, same as a
+region. **Nothing sends automatically** -- a target only ever acts because
 you clicked its Send button, never on a timer or because a value changed.
 
 - **paste checked (default)**: Send looks the target's name up in
@@ -132,8 +160,9 @@ cached after that (~3.5s to load into memory on this machine).
 ## Wiring up your calculation
 
 Connected end-to-end -- `ocr_region_watcher/formula.py`'s `compute(readings)` is called
-every cycle, and its return shows live in the **Result** row at the bottom
-of the app window. `readings` maps each region/manual-input's current name
+every cycle, and its return shows live in the **Result** bar pinned to the
+bottom of the Main tab (always visible, regardless of what's scrolled or
+collapsed above it). `readings` maps each region/manual-input's current name
 to its current value (a number if it parsed as one, otherwise the raw text)
 -- an input that hasn't produced a value yet just isn't in the dict, so use
 `readings.get("name")` rather than assuming a key exists. The stub itself
@@ -171,3 +200,8 @@ crashing the app.
   under that point -- there's no simulation/dry-run mode yet. `pyautogui`'s
   failsafe stays on: slamming the mouse to any screen corner aborts an
   in-flight click+paste.
+- **Very long values/names in a corner chip**: the chip sizes itself to its
+  text, so an unusually long recognized value or target name can run past
+  the small margin reserved for it. Doesn't affect what's captured or
+  read -- the app window's own row always shows the full text -- just the
+  floating chip itself.
