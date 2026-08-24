@@ -27,7 +27,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QRegion
 from PySide6.QtWidgets import QLabel, QWidget
 
-from .style import MONO_SMALL
+from .style import MONO_SMALL, start_pulsing_glow, stop_pulsing_glow
 
 BORDER = 2  # thin, matching the minimal-overlay mockup -- the old header+strip design used a thick 6px border, but that's not what a click-through interior needs; only HANDLE below governs how wide the actual draggable/resizable margin is
 CORNER_RADIUS = 4  # matches the mockup's rounded frame corners
@@ -261,6 +261,15 @@ class RegionWatcher(QWidget):
             f"<span style='color:{VALUE_TEXT_COLOR.name()};'>{value_html}</span>"
         )
         self._resize_and_reposition_chip()
+
+    def set_ocr_loading(self, loading: bool) -> None:
+        """Toggles the pulsing glow that marks this chip's value as a
+        placeholder while the OCR model is still loading in the background
+        (see App._load_recognizer_async / _on_recognizer_ready)."""
+        if loading:
+            start_pulsing_glow(self.value_chip)
+        else:
+            stop_pulsing_glow(self.value_chip)
 
     def set_locked(self, locked: bool) -> None:
         if locked != self.locked:

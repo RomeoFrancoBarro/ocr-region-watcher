@@ -34,7 +34,7 @@ from ..templates import TemplateStore, empty_snapshot
 from .events import EventSequencer
 from .manual_input import ManualInput
 from .overlay import snip_point, snip_region
-from .style import MONO, MONO_SMALL
+from .style import MONO, MONO_SMALL, start_pulsing_glow, stop_pulsing_glow
 from .target import TargetMarker
 from .watcher import RegionWatcher, next_region_color
 
@@ -548,6 +548,7 @@ class App(QWidget):
         self._add_region_row(watcher)
         if self.recognizer is None:
             watcher.set_lines(["loading OCR..."])
+            watcher.set_ocr_loading(True)
         return watcher
 
     def _add_region_row(self, watcher: RegionWatcher) -> None:
@@ -1218,6 +1219,7 @@ class App(QWidget):
             return
         self._recognizer_loading = True
         self.status_label.setText("Loading OCR model in the background...")
+        start_pulsing_glow(self.status_label)
 
         self._loader = _RecognizerLoader()
         self._loader.ready.connect(self._on_recognizer_ready)
@@ -1227,6 +1229,9 @@ class App(QWidget):
     def _on_recognizer_ready(self, recognizer: EasyOCRRecognizer) -> None:
         self.recognizer = recognizer
         self._recognizer_loading = False
+        stop_pulsing_glow(self.status_label)
+        for watcher in self.watchers:
+            watcher.set_ocr_loading(False)
         self._update_status()
 
     def _cycle(self) -> None:

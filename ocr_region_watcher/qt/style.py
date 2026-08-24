@@ -3,11 +3,53 @@ look, rather than scattered font/color literals through every widget file.
 """
 from __future__ import annotations
 
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import QGraphicsDropShadowEffect, QWidget
 
 MONO = QFont("Consolas", 9)
 MONO_SMALL = QFont("Consolas", 8)
 UI_SMALL = QFont("Segoe UI", 8)
+
+GLOW_COLOR = QColor("#5865f2")  # the app's existing accent blue (QPushButton#accent) -- reused here so a pulsing glow reads as "in progress", not an error
+_GLOW_MIN_BLUR = 4
+_GLOW_MAX_BLUR = 20
+_GLOW_DURATION_MS = 1100
+
+
+def start_pulsing_glow(widget: QWidget, color: QColor = GLOW_COLOR) -> None:
+    """Marks `widget` as "loading" with a soft drop-shadow whose blur
+    radius breathes in and out forever -- the shared visual for "the OCR
+    model is still loading in the background" (see App._load_recognizer_async),
+    used on both the panel's status label and a region's floating chip.
+
+    The animation is stashed on the widget itself so callers don't need to
+    keep a reference alive; stop_pulsing_glow() tears it back down.
+    """
+    effect = QGraphicsDropShadowEffect(widget)
+    effect.setColor(color)
+    effect.setOffset(0, 0)
+    effect.setBlurRadius(_GLOW_MIN_BLUR)
+    widget.setGraphicsEffect(effect)
+
+    anim = QPropertyAnimation(effect, b"blurRadius", widget)
+    anim.setDuration(_GLOW_DURATION_MS)
+    anim.setStartValue(_GLOW_MIN_BLUR)
+    anim.setKeyValueAt(0.5, _GLOW_MAX_BLUR)
+    anim.setEndValue(_GLOW_MIN_BLUR)
+    anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+    anim.setLoopCount(-1)
+    anim.start()
+    widget._pulsing_glow_anim = anim  # kept alive by this ref alone -- stop_pulsing_glow() drops it
+
+
+def stop_pulsing_glow(widget: QWidget) -> None:
+    """Undoes start_pulsing_glow(). Harmless if none is active."""
+    anim = getattr(widget, "_pulsing_glow_anim", None)
+    if anim is not None:
+        anim.stop()
+        widget._pulsing_glow_anim = None
+    widget.setGraphicsEffect(None)
 
 STYLESHEET = """
 QWidget {
