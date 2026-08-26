@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OCVBot Test Site</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161a;
+    --panel: #1e2127;
+    --panel-border: #2c313a;
+    --text: #e8eaed;
+    --muted: #8b93a1;
+    --accent: #5b8cff;
+    --accent-hover: #7aa0ff;
+    --mono: "Consolas", "SFMono-Regular", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 32px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+
+  .subtitle {
+    color: var(--muted);
+    font-size: 13px;
+    margin: 0 0 28px;
+  }
+
+  .panels {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 20px;
+    text-align: center;
+  }
+
+  .panel-label {
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 12px;
+  }
+
+  .panel-value {
+    font-family: var(--mono);
+    font-size: 48px;
+    font-weight: 700;
+    color: #7CFC9A;
+    line-height: 1;
+    margin-bottom: 16px;
+    user-select: text;
+  }
+
+  .speed-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .speed-row input[type="range"] {
+    flex: 1;
+    accent-color: var(--accent);
+  }
+
+  .speed-label {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    min-width: 60px;
+    text-align: right;
+  }
+
+  .send-section {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+
+  .send-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .send-row input[type="text"] {
+    flex: 1;
+    background: #14161a;
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 16px;
+  }
+
+  .send-row input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  button {
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    color: white;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  button:hover { background: var(--accent-hover); }
+
+  button.secondary {
+    background: transparent;
+    border: 1px solid var(--panel-border);
+    color: var(--muted);
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  button.secondary:hover {
+    color: var(--text);
+    border-color: var(--muted);
+  }
+
+  .log-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+
+  .log-header .title {
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .log {
+    max-height: 240px;
+    overflow-y: auto;
+    background: #14161a;
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 4px 0;
+  }
+
+  .log-empty {
+    color: var(--muted);
+    font-size: 13px;
+    padding: 16px;
+    text-align: center;
+    font-style: italic;
+  }
+
+  .log-row {
+    display: flex;
+    gap: 12px;
+    padding: 8px 14px;
+    font-family: var(--mono);
+    font-size: 13px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+
+  .log-row:last-child { border-bottom: none; }
+
+  .log-time { color: var(--muted); }
+  .log-value { color: var(--text); font-weight: 600; }
+
+  .footnote {
+    margin-top: 20px;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+  <h1>OCVBot Test Site</h1>
+  <p class="subtitle">
+    Local, offline test fixture &mdash; nothing here is ever saved. Refresh the page and everything resets.
+  </p>
+
+  <div class="panels" id="panels"></div>
+
+  <div class="send-section">
+    <div class="log-header">
+      <span class="title">Send target</span>
+    </div>
+    <div class="send-row">
+      <input type="text" id="send-input" placeholder="Type or paste a value, then Send&hellip;" autocomplete="off">
+      <button id="send-btn">Send</button>
+    </div>
+    <div class="log-header">
+      <span class="title">Received (this session only)</span>
+      <button class="secondary" id="clear-btn">Clear log</button>
+    </div>
+    <div class="log" id="log">
+      <div class="log-empty" id="log-empty">Nothing sent yet.</div>
+    </div>
+  </div>
+
+  <p class="footnote">
+    Numbers redraw on independent timers. The log is an in-memory array only &mdash; no localStorage, sessionStorage, or cookies.
+  </p>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- Random-number panels ------------------------------------------
+  var PANEL_COUNT = 3;
+  var MIN_MS = 50;
+  var MAX_MS = 2000;
+  var DEFAULT_MS = 400;
+
+  var panelsEl = document.getElementById("panels");
+  var timers = [];
+
+  function randomValue() {
+    return Math.floor(Math.random() * 10000); // 0-9999
+  }
+
+  function buildPanel(index) {
+    var wrap = document.createElement("div");
+    wrap.className = "panel";
+
+    var label = document.createElement("div");
+    label.className = "panel-label";
+    label.textContent = "Region " + (index + 1);
+
+    var value = document.createElement("div");
+    value.className = "panel-value";
+    value.textContent = randomValue();
+
+    var speedRow = document.createElement("div");
+    speedRow.className = "speed-row";
+
+    var slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = String(MIN_MS);
+    slider.max = String(MAX_MS);
+    slider.step = "50";
+    slider.value = String(DEFAULT_MS);
+
+    var speedLabel = document.createElement("span");
+    speedLabel.className = "speed-label";
+    speedLabel.textContent = DEFAULT_MS + " ms";
+
+    speedRow.appendChild(slider);
+    speedRow.appendChild(speedLabel);
+
+    wrap.appendChild(label);
+    wrap.appendChild(value);
+    wrap.appendChild(speedRow);
+    panelsEl.appendChild(wrap);
+
+    var timerId = null;
+
+    function tick() {
+      value.textContent = randomValue();
+    }
+
+    function restart(intervalMs) {
+      if (timerId !== null) {
+        clearInterval(timerId);
+      }
+      timerId = setInterval(tick, intervalMs);
+    }
+
+    slider.addEventListener("input", function () {
+      var ms = Number(slider.value);
+      speedLabel.textContent = ms + " ms";
+      restart(ms);
+    });
+
+    restart(DEFAULT_MS);
+    timers.push(timerId);
+  }
+
+  for (var i = 0; i < PANEL_COUNT; i++) {
+    buildPanel(i);
+  }
+
+  // ---- Send / in-memory log -------------------------------------------
+  // Deliberately kept in a plain JS array, never written to storage of
+  // any kind, so a page refresh always comes back to an empty log.
+  var receivedLog = [];
+
+  var sendInput = document.getElementById("send-input");
+  var sendBtn = document.getElementById("send-btn");
+  var clearBtn = document.getElementById("clear-btn");
+  var logEl = document.getElementById("log");
+  var logEmptyEl = document.getElementById("log-empty");
+
+  function formatTime(date) {
+    function pad(n) { return n < 10 ? "0" + n : String(n); }
+    return pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+  }
+
+  function renderLog() {
+    logEl.innerHTML = "";
+    if (receivedLog.length === 0) {
+      logEl.appendChild(logEmptyEl);
+      return;
+    }
+    // Newest first.
+    for (var i = receivedLog.length - 1; i >= 0; i--) {
+      var entry = receivedLog[i];
+      var row = document.createElement("div");
+      row.className = "log-row";
+
+      var time = document.createElement("span");
+      time.className = "log-time";
+      time.textContent = "[" + entry.time + "]";
+
+      var val = document.createElement("span");
+      val.className = "log-value";
+      val.textContent = entry.value;
+
+      row.appendChild(time);
+      row.appendChild(val);
+      logEl.appendChild(row);
+    }
+  }
+
+  function sendValue() {
+    var value = sendInput.value;
+    if (value.trim() === "") return;
+    receivedLog.push({ time: formatTime(new Date()), value: value });
+    renderLog();
+    sendInput.value = "";
+    sendInput.focus();
+  }
+
+  sendBtn.addEventListener("click", sendValue);
+  sendInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") sendValue();
+  });
+  clearBtn.addEventListener("click", function () {
+    receivedLog = [];
+    renderLog();
+  });
+})();
+</script>
+
+</body>
+</html>

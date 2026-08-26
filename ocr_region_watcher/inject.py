@@ -30,11 +30,22 @@ def send(x: int, y: int, text: str | None = None, *, click: bool = True, paste: 
     focused (e.g. from an earlier step in a sequence) without clicking,
     and potentially re-toggling, it again. Used by the Qt app's per-target
     click/paste checkboxes (ocr_region_watcher/qt/app.py).
+
+    The click moves the OS-wide mouse cursor to (x, y) as a side effect of
+    giving the target focus -- reported directly: after Send, the cursor
+    was left sitting there instead of going back to wherever it started.
+    So when we click, note where the mouse was first and move it back
+    once we're done, even if the paste step raises.
     """
-    if click:
-        pyautogui.click(x, y)
-    if paste:
+    origin = pyautogui.position() if click else None
+    try:
         if click:
-            time.sleep(CLICK_TO_PASTE_DELAY_S)
-        pyperclip.copy(text)
-        pyautogui.hotkey("ctrl", "v")
+            pyautogui.click(x, y)
+        if paste:
+            if click:
+                time.sleep(CLICK_TO_PASTE_DELAY_S)
+            pyperclip.copy(text)
+            pyautogui.hotkey("ctrl", "v")
+    finally:
+        if origin is not None:
+            pyautogui.moveTo(*origin)
