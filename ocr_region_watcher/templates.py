@@ -18,7 +18,48 @@ def empty_snapshot() -> dict:
     """The shape every saved template's contents follow -- also the
     baseline an unsaved-but-active (never-yet-saved) template is compared
     against for the "unsaved changes" check."""
-    return {"regions": [], "manual_inputs": [], "targets": []}
+    return {"regions": [], "manual_inputs": [], "targets": [], "events": [], "loop": False}
+
+
+def events_snapshot(events: list[dict], targets: list) -> list[dict]:
+    """Serializes an EventSequencer's `events` (each holding a *live*
+    target object -- see ocr_region_watcher/qt/events.py) into the saved
+    shape: {"target_index": <position within the saved "targets" list>,
+    "delay": ...}. A live object reference can't survive a JSON round
+    trip, but its position in the same list that "targets" itself is
+    built from can.
+
+    A step whose target isn't in `targets` any more (removed by hand
+    while the step still pointed at it -- the app tolerates this
+    mid-edit as a "dangling" step) is dropped rather than saved, since a
+    step with no target can't fire on restore either.
+
+    Doesn't import anything Qt-specific -- `targets` only ever needs to
+    support `in` and `.index()`, so this is exercised directly in tests
+    with plain stand-in objects instead of real TargetMarkers.
+    """
+    result = []
+    for event in events:
+        target = event["target"]
+        if target not in targets:
+            continue
+        result.append({"target_index": targets.index(target), "delay": event["delay"]})
+    return result
+
+
+def events_from_snapshot(data: list[dict], targets: list) -> list[dict]:
+    """The inverse of events_snapshot() -- rebuilds an EventSequencer's
+    `events` against a freshly-restored `targets` list. An entry whose
+    target_index is missing, not an int, or out of range for the
+    restored targets (hand-edited JSON, or a template whose targets
+    section didn't fully restore) is skipped rather than raising."""
+    result = []
+    for entry in data:
+        index = entry.get("target_index")
+        if not isinstance(index, int) or isinstance(index, bool) or not (0 <= index < len(targets)):
+            continue
+        result.append({"target": targets[index], "delay": entry.get("delay", 0)})
+    return result
 
 
 class TemplateStore:

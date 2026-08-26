@@ -30,7 +30,7 @@ from .. import formula, inject
 from ..capture import ScreenGrabber
 from ..colorcheck import sample_reference_color, still_locked
 from ..recognize import EasyOCRRecognizer
-from ..templates import TemplateStore, empty_snapshot
+from ..templates import TemplateStore, empty_snapshot, events_from_snapshot, events_snapshot
 from .events import EventSequencer
 from .manual_input import ManualInput
 from .overlay import snip_point, snip_region
@@ -774,6 +774,8 @@ class App(QWidget):
                 }
                 for t in self.targets
             ],
+            "events": events_snapshot(self.sequencer.events, self.targets),
+            "loop": self.sequencer.loop,
         }
 
     def _teardown_live_state(self) -> None:
@@ -785,9 +787,14 @@ class App(QWidget):
 
         The event sequence goes with them: its steps hold direct references
         to the target markers destroyed below, so keeping them would leave
-        the Events tab listing steps that can never fire again."""
+        the Events tab listing steps that can never fire again. Loop
+        resets too -- _restore_snapshot sets it back to whatever the
+        template being switched to actually saved; a blank slate (no
+        _restore_snapshot call after this) should just come back unchecked."""
         self.sequencer.stop()
         self.sequencer.events.clear()
+        self.sequencer.loop = False
+        self.loop_checkbox.setChecked(False)
         for watcher in list(self.watchers):
             watcher._close()
         for target in list(self.targets):
@@ -829,10 +836,17 @@ class App(QWidget):
                 click_enabled=t.get("click_enabled", True),
                 paste_enabled=t.get("paste_enabled", True),
             )
+
+        # target_index in the saved events refers to position within the
+        # "targets" list just restored above -- must run after it.
+        self.sequencer.events = events_from_snapshot(data.get("events", []), self.targets)
+        self.sequencer.loop = data.get("loop", False)
+        self.loop_checkbox.setChecked(self.sequencer.loop)
+
         self._update_status()
-        # Teardown cleared the event sequence (those steps pointed at the
-        # targets it destroyed); rebuild the rows so the Events tab shows
-        # that plainly instead of going quietly stale.
+        # Rows are built from self.sequencer.events, not tracked
+        # incrementally -- rebuild now that it holds whatever was just
+        # restored above (empty, if this template predates saved events).
         self._rebuild_event_rows()
 
     def _confirm_discard_if_dirty(self) -> bool:
