@@ -133,7 +133,12 @@ class _RecognizerLoader(QObject):
     ready = Signal(object)
 
     def load(self) -> None:
-        recognizer = EasyOCRRecognizer(gpu=False)
+        # gpu=True is safe even without a CUDA-capable torch install --
+        # EasyOCR checks torch.cuda.is_available() itself and falls back
+        # to CPU (identical to gpu=False) with just a log warning if it's
+        # not there. So this costs nothing today and starts using a real
+        # GPU for free the moment one becomes available to torch.
+        recognizer = EasyOCRRecognizer(gpu=True)
         self.ready.emit(recognizer)
 
 
